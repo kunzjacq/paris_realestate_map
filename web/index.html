@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Immo map — RER, air, bruit</title>
+  <link rel="stylesheet" href="vendor/leaflet.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <aside id="panel">
+    <header>
+      <button type="button" id="hide-panel" class="panel-btn" title="Masquer le menu" aria-label="Masquer le menu">«</button>
+      <h1>Où acheter ?</h1>
+      <p class="sub">Zones à distance de marche d'une gare RER ou Transilien, sous des seuils de bruit et de pollution.</p>
+    </header>
+
+    <section>
+      <h2>
+        <button type="button" id="toggle-communes" class="fold" aria-expanded="true" aria-controls="communes">
+          <span class="chevron" aria-hidden="true">▾</span>Communes
+        </button>
+        <span class="hint" id="commune-count"></span>
+      </h2>
+      <ul id="communes" class="communes"></ul>
+      <div id="add-box" hidden>
+        <div class="search">
+          <input type="search" id="search" placeholder="Ajouter une commune d'Île-de-France…" autocomplete="off">
+          <ul id="suggestions" class="suggestions" hidden></ul>
+        </div>
+        <button type="button" id="add-visible" class="btn">Ajouter les communes visibles (≥ 30 % à l’écran)</button>
+        <p class="note">Ou cliquez sur la carte hors des communes chargées. Une nouvelle commune prend 1 à 3 min (téléchargements), puis s'affiche d'elle-même.</p>
+        <div id="jobs" class="jobs" hidden></div>
+      </div>
+      <p class="note" id="static-note" hidden>Mode statique : lancez <code>./run.sh</code> pour pouvoir ajouter des communes.</p>
+    </section>
+
+    <section>
+      <h2>Trajet jusqu'à une gare <output id="walk-out"></output></h2>
+      <label class="check check-top"><input type="checkbox" id="walk-filter" checked> Filtrer par temps de trajet</label>
+      <div id="walk-controls">
+        <div class="seg" id="travel-mode" role="group" aria-label="Mode de trajet">
+          <button type="button" data-mode="walk">À pied</button>
+          <button type="button" data-mode="bike">À vélo</button>
+        </div>
+        <div class="networks">
+          <span>Gares :</span>
+          <label><input type="checkbox" id="net-rer" checked> <i class="dot rer"></i>RER</label>
+          <label><input type="checkbox" id="net-transilien" checked> <i class="dot transilien"></i>Transilien</label>
+        </div>
+        <input type="range" id="walk" min="3" max="20" step="1" value="10">
+        <div class="ticks"><span>3</span><span>5</span><span>10</span><span>15</span><span>20 min</span></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Pollution de l'air <span class="hint" id="air-year"></span></h2>
+      <div id="air-sliders"></div>
+    </section>
+
+    <section>
+      <h2>Bruit des transports <span class="hint">Lden</span></h2>
+      <label class="field">
+        <span>Bruit routier — toutes rues (Bruitparif, CSB E4)</span>
+        <select id="lden-route">
+          <option value="999">Pas de filtre</option>
+          <option value="75">&lt; 75 dB</option>
+          <option value="70">&lt; 70 dB</option>
+          <option value="65">&lt; 65 dB</option>
+          <option value="60">&lt; 60 dB</option>
+          <option value="55">&lt; 55 dB</option>
+          <option value="50">&lt; 50 dB</option>
+          <option value="45">&lt; 45 dB</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Bruit ferroviaire (Bruitparif + DRIEAT, CSB E4)</span>
+        <select id="lden-fer">
+          <option value="999">Pas de filtre</option>
+          <option value="75">&lt; 75 dB</option>
+          <option value="70">&lt; 70 dB</option>
+          <option value="65">&lt; 65 dB</option>
+          <option value="60">&lt; 60 dB</option>
+          <option value="55">&lt; 55 dB</option>
+          <option value="50">&lt; 50 dB</option>
+          <option value="45">&lt; 45 dB</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Indice global Bruitparif (route, fer, avion — 3 niveaux)</span>
+        <select id="bp-noise">
+          <option value="3">Pas de filtre</option>
+          <option value="2">Exclure « très dégradé »</option>
+          <option value="1">« Préservé » seulement</option>
+        </select>
+      </label>
+      <p class="note">Repères : l'OMS recommande moins de 53 dB Lden pour le bruit routier et moins de 54 dB pour le ferroviaire ; la valeur limite réglementaire est de 68 dB (route) et 73 dB (fer).</p>
+    </section>
+
+    <section class="result">
+      <h2>Zone retenue</h2>
+      <div id="result"></div>
+    </section>
+
+    <section>
+      <h2>Affichage</h2>
+      <label class="field">
+        <span>Couche de contexte</span>
+        <select id="context">
+          <option value="none">Aucune</option>
+          <option value="walk">Temps de trajet</option>
+          <option value="no2">NO₂</option>
+          <option value="pm25">PM2.5</option>
+          <option value="pm10">PM10</option>
+          <option value="bp_noise">Indice global Bruitparif</option>
+          <option value="lden_route">Bruit routier</option>
+          <option value="lden_fer">Bruit ferroviaire</option>
+        </select>
+      </label>
+      <div id="legend"></div>
+      <label class="check"><input type="checkbox" id="show-zone" checked> Zone retenue</label>
+      <label class="check"><input type="checkbox" id="show-iso" checked> Contour de l'isochrone</label>
+    </section>
+
+    <footer id="sources"></footer>
+  </aside>
+  <div id="resizer" role="separator" aria-orientation="vertical" title="Glisser pour redimensionner le menu (double-clic : largeur par défaut)"></div>
+  <main id="map"><div id="map-loading" class="map-loading" hidden></div></main>
+
+  <script src="vendor/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

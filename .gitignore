@@ -1,0 +1,12 @@
+# environnements Python (recréés par run.sh)
+.venv/
+.venv-local/
+__pycache__/
+
+# données : construites (web/data) ou téléchargées (data/raw), hors dépôt ;
+# voir scripts/data_archive.py pour les sauvegarder / restaurer
+/data/
+/web/data/
+
+# archives de données
+immo_map-donnees-*.tar.gz
