@@ -98,11 +98,6 @@
       <p class="note">Repères : l'OMS recommande moins de 53 dB Lden pour le bruit routier et moins de 54 dB pour le ferroviaire ; la valeur limite réglementaire est de 68 dB (route) et 73 dB (fer).</p>
     </section>
 
-    <section class="result">
-      <h2>Zone retenue</h2>
-      <div id="result"></div>
-    </section>
-
     <section>
       <h2>Affichage</h2>
       <label class="field">
@@ -130,6 +125,15 @@
         <span class="note" id="refresh-note"></span>
       </div>
       <details id="refresh-details" class="note" hidden><summary>Détail par source</summary><ul id="refresh-sources"></ul></details>
+    </section>
+
+    <section class="result">
+      <h2>
+        <button type="button" id="toggle-result" class="fold" aria-expanded="true" aria-controls="result">
+          <span class="chevron" aria-hidden="true">▾</span>Zone retenue
+        </button>
+      </h2>
+      <div id="result"></div>
     </section>
 
     <footer id="sources"></footer>

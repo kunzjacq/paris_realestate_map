@@ -805,20 +805,24 @@ function renderCommuneList(jobStatus = lastStatus) {
   $("commune-count").textContent = communes.size ? `${communes.size - state.inactive.length} / ${communes.size} actives` : "";
 }
 
-function initCommuneList() {
-  const ul = $("communes");
-  // liste repliable, état mémorisé
-  const toggle = $("toggle-communes");
+// rubrique repliable par son titre, état mémorisé
+function makeFoldable(toggleId, body, storageKey, what) {
+  const toggle = $(toggleId);
   const setFolded = (folded) => {
-    ul.hidden = folded;
+    body.hidden = folded;
     toggle.setAttribute("aria-expanded", String(!folded));
-    toggle.title = folded ? "Déplier la liste des communes" : "Replier la liste des communes";
-    try { localStorage.setItem("immo_map.communesFolded", folded ? "1" : ""); } catch (e) { /* stockage indisponible */ }
+    toggle.title = `${folded ? "Déplier" : "Replier"} ${what}`;
+    try { localStorage.setItem(storageKey, folded ? "1" : ""); } catch (e) { /* stockage indisponible */ }
   };
   let folded = false;
-  try { folded = localStorage.getItem("immo_map.communesFolded") === "1"; } catch (e) { /* idem */ }
+  try { folded = localStorage.getItem(storageKey) === "1"; } catch (e) { /* idem */ }
   setFolded(folded);
-  toggle.addEventListener("click", () => setFolded(!ul.hidden));
+  toggle.addEventListener("click", () => setFolded(!body.hidden));
+}
+
+function initCommuneList() {
+  const ul = $("communes");
+  makeFoldable("toggle-communes", ul, "immo_map.communesFolded", "la liste des communes");
   ul.addEventListener("change", (e) => {
     const code = e.target.dataset.code; if (!code) return;
     state.inactive = e.target.checked ? state.inactive.filter((c) => c !== code) : [...state.inactive, code];
@@ -1218,6 +1222,7 @@ function initControls() {
   bind("context", "context", true);
   bind("show-zone", "showZone", false, "checked");
   bind("show-iso", "showIso", false, "checked");
+  makeFoldable("toggle-result", $("result"), "immo_map.resultFolded", "la zone retenue");
   initCommuneList();
 }
 
