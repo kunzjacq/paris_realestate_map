@@ -595,8 +595,8 @@ function drawZone(c, res) {
   if (!rings.length) return;
   // remplissage éventuel et liseré blanc dans un même tracé, puis le trait par-dessus
   c.zone.addLayer(L.polygon(rings, { ...base, fill: !!st.fill, fillColor: st.fill || "#000",
-    fillOpacity: st.fillOpacity, color: "#fff", weight: 5, opacity: 0.9 }));
-  c.zone.addLayer(L.polygon(rings, { ...base, fill: false, color: st.line, weight: 2.5 }));
+    fillOpacity: st.fillOpacity, color: "#fff", weight: 3, opacity: 0.9 }));
+  c.zone.addLayer(L.polygon(rings, { ...base, fill: false, color: st.line, weight: 1.5 }));
 }
 
 // temps (s) -> tranche de la légende (5, 10, 15, 20 min), 0 au-delà
