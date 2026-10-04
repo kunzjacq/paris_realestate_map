@@ -90,6 +90,7 @@ async function loadCommuneMeta(code, built) {
     code, meta, built, loaded: false, loading: null,
     outlineRings: outlineGeo.features.flatMap((f) => geoRings(f.geometry)),
     outline: L.geoJSON(outlineGeo, { style: { color: "#1f2328", weight: 2, fill: false }, interactive: false }).addTo(map),
+    label: communeLabel(meta.nom, outlineGeo).addTo(map),
   });
 }
 
@@ -137,6 +138,55 @@ function showLoading(n) {
   if (el) { el.hidden = !n; el.textContent = n ? `Chargement de ${n} commune(s)…` : ""; }
 }
 
+// ------------------------------------------------------------------ noms des communes
+// Les noms du fond de carte sont sous le voile et les contours de zone : on dessine les nôtres au-dessus.
+
+const LABEL_MIN_ZOOM = 12;  // en dessous, noms masqués (vue d'ensemble trop chargée)
+
+function communeLabel(nom, geo) {
+  return L.marker(labelPoint(geo), {
+    pane: "labels", interactive: false, keyboard: false,
+    icon: L.divIcon({ className: "commune-label", html: `<span>${nom}</span>`, iconSize: null }),
+  });
+}
+
+// point « le plus intérieur » de la commune (loin de ses limites), recherché sur une grille :
+// le centre de gravité peut tomber hors d'une commune de forme irrégulière
+function labelPoint(geo) {
+  const polys = geo.features.flatMap((f) => f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates);
+  const outer = polys.reduce((a, b) => (b[0].length > a[0].length ? b : a));  // partie principale
+  const k = Math.cos((outer[0][0][1] * Math.PI) / 180);  // degrés de longitude -> distance
+  const xs = outer[0].map((p) => p[0]), ys = outer[0].map((p) => p[1]);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const inside = (x, y) => outer.reduce((inn, ring, r) => {
+    let c = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i], [xj, yj] = ring[j];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c;
+    }
+    return r === 0 ? c : inn && !c;  // dans l'enveloppe et hors des trous
+  }, false);
+  const distToEdge = (x, y) => {
+    let d = Infinity;
+    for (const ring of outer) for (let i = 1; i < ring.length; i++) {
+      const [ax, ay] = ring[i - 1], [bx, by] = ring[i];
+      const dx = (bx - ax) * k, dy = by - ay, px = (x - ax) * k, py = y - ay;
+      const t = Math.max(0, Math.min(1, (px * dx + py * dy) / (dx * dx + dy * dy || 1)));
+      d = Math.min(d, Math.hypot(px - t * dx, py - t * dy));
+    }
+    return d;
+  };
+  let best = [(y0 + y1) / 2, (x0 + x1) / 2], bestD = -1;
+  const N = 24;
+  for (let i = 1; i < N; i++) for (let j = 1; j < N; j++) {
+    const x = x0 + ((x1 - x0) * i) / N, y = y0 + ((y1 - y0) * j) / N;
+    if (!inside(x, y)) continue;
+    const d = distToEdge(x, y);
+    if (d > bestD) { bestD = d; best = [y, x]; }
+  }
+  return best;
+}
+
 const boundsOf = (c) => L.latLngBounds(c.meta.bounds);
 const loadedCommunes = () => [...communes.values()].filter((c) => c.loaded);
 
@@ -170,7 +220,7 @@ function indexCells(c) {
 }
 
 function removeCommuneLayers(c) {
-  for (const k of ["context", "zone", "outline"]) if (c[k]) map.removeLayer(c[k]);
+  for (const k of ["context", "zone", "outline", "label"]) if (c[k]) map.removeLayer(c[k]);
   if (c.iso) isoLayer.removeLayer(c.iso);
 }
 
@@ -266,6 +316,9 @@ function initMap() {
   // panes : contours d'isochrones et gares au-dessus des surfaces raster
   map.createPane("zone").style.zIndex = 410;
   map.createPane("iso").style.zIndex = 420;
+  const labels = map.createPane("labels");  // noms de communes, au-dessus des zones
+  labels.style.zIndex = 630;
+  labels.style.pointerEvents = "none";
   map.createPane("stations").style.zIndex = 640;
   isoLayer = L.layerGroup().addTo(map);
   accesLayer = L.geoJSON(null, {
@@ -281,6 +334,9 @@ function initMap() {
 
   map.on("click", onMapClick);
   map.on("moveend", () => { filterStations(); ensureVisibleLoaded(); drawVisibleZones(); drawIso(); saveView(); });
+  const labelsByZoom = () => map.getContainer().classList.toggle("labels-off", map.getZoom() < LABEL_MIN_ZOOM);
+  map.on("zoomend", labelsByZoom);
+  labelsByZoom();
   initHover();
 }
 

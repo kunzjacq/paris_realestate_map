@@ -196,3 +196,11 @@ body.panel-hidden #panel, body.panel-hidden #resizer { display: none; }
   background: rgba(255,255,255,.95); border: 1px solid var(--line); border-radius: 16px; padding: 5px 14px;
   font-size: 12.5px; box-shadow: 0 2px 8px rgba(0,0,0,.12); pointer-events: none;
 }
+
+.commune-label span {
+  display: block; transform: translate(-50%, -50%); white-space: nowrap;
+  font: 700 15px/1.1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  text-transform: uppercase; letter-spacing: .06em; color: #23262b;
+  text-shadow: 0 0 2px #fff, 0 0 3px #fff, 0 0 5px #fff, 0 0 8px rgba(255,255,255,.9);
+}
+.labels-off .commune-label { display: none; }
