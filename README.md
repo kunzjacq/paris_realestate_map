@@ -6,21 +6,86 @@ de pollution de l'air et de bruit, pour n'importe quelle commune d'Île-de-Franc
 ## Lancer l'application
 
 ```sh
-./run.sh            # puis ouvrir http://localhost:8000/
+./run.sh            # puis ouvrir http://localhost:8000/   (autre port : ./run.sh 8080)
 ```
 
-`run.sh` démarre `scripts/server.py`. Au premier lancement, si le venv `.venv` ne fonctionne pas avec le
-Python de la machine, il crée `.venv-local` et y installe `requirements.txt` (il faut `python3-venv`). Ce serveur sert l'application (`web/`) et construit les
-communes à la demande. Pour ajouter une commune depuis l'application :
+`run.sh` choisit un environnement Python, installe les dépendances manquantes puis démarre le serveur
+(voir « Serveur » ci-dessous). Pour ajouter une commune depuis l'application :
 - la rechercher par nom ;
 - cliquer sur la carte hors des communes chargées ;
-- ou cliquer sur « Ajouter les communes visibles » (12 au maximum).
+- ou cliquer sur « Ajouter les communes visibles » (communes visibles à au moins 30 %, 12 au maximum).
 
-Une nouvelle commune prend de quelques secondes à quelques minutes (dalles OSM et cartes à télécharger), puis
-s'affiche d'elle-même. Les téléchargements sont partagés entre communes et mis en cache dans `data/raw/`.
+Une nouvelle commune prend de quelques secondes (données déjà en cache) à quelques minutes (dalles OSM et
+cartes à télécharger), puis s'affiche d'elle-même.
 
-Servi par un simple serveur statique (`python3 -m http.server -d web`), l'application fonctionne
-en lecture seule avec les communes déjà construites.
+## Serveur
+
+`scripts/server.py` (lancé par `run.sh`) sert l'application et les données, construit les communes à la
+demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `127.0.0.1`.
+
+### Démarrage
+
+1. **Environnement Python** (`run.sh`) : `.venv` s'il fonctionne avec le Python de la machine et contient
+   toutes les dépendances ; sinon `.venv-local`, créé au besoin (il faut `python3-venv`), où les paquets
+   manquants de `requirements.txt` sont installés.
+2. **Contours des communes d'Île-de-France** : chargés depuis `data/raw/idf_communes.gpkg` (téléchargés une
+   fois sur geo.api.gouv.fr) ; ils servent à la recherche et aux requêtes « commune sous un point ».
+3. **Index** : `web/data/index.json` est créé s'il manque.
+4. **Mises à niveau des données existantes** : résumé des plages de pollution ajouté aux communes qui ne
+   l'ont pas, versions compressées `.gz` créées ou rafraîchies, et communes produites avec un format de
+   données antérieur (`DATA_FORMAT` dans `pipeline.py`) mises en file de reconstruction.
+
+### Fichiers servis
+
+- `web/` : l'application (`index.html`, `app.js`, `style.css`, Leaflet dans `web/vendor/`).
+- `web/data/` : les données. Chaque fichier existe aussi en version compressée (`.gz`, ~5 fois plus
+  petite), envoyée avec `Content-Encoding: gzip` aux navigateurs qui l'acceptent.
+- Tous les fichiers servis portent `Cache-Control: no-cache` : le navigateur revérifie chaque fichier (requête
+  conditionnelle, réponse 304 s'il n'a pas changé) et ne garde donc jamais une ancienne version d'`app.js`
+  ou des données après une mise à jour.
+
+### API (JSON)
+
+| Requête | Rôle |
+|---|---|
+| `GET /api/search?q=nogent` | communes d'Île-de-France dont le nom ou le code INSEE correspond |
+| `GET /api/at?lon=…&lat=…` | commune sous un point (clic sur la carte hors des communes chargées) |
+| `GET /api/bbox?w=…&s=…&e=…&n=…` | communes visibles à au moins 30 % dans une emprise (12 au maximum) |
+| `POST /api/build` `{"codes": [...]}` | met des communes (codes INSEE) en file de construction |
+| `DELETE /api/commune/<code>` | retire une commune (supprime ses données) |
+| `GET /api/status` | état de la file : commune en cours et étape, communes en attente, erreurs, version |
+| `POST /api/stats` | surfaces de la zone retenue par commune (voir ci-dessous) |
+
+### File de construction
+
+Les constructions sont traitées une par une par un seul fil d'exécution (elles partagent les caches de
+téléchargement). L'application interroge `/api/status` toutes les 1,5 s pendant une construction (5 s sinon) ;
+quand le numéro de version change, elle recharge l'index et affiche les communes nouvelles ou reconstruites.
+
+Avant chaque construction, le serveur vérifie si `scripts/pipeline.py` a été modifié depuis son
+chargement : si oui, il le recharge et remet en file les communes au format de données antérieur. Une
+modification du pipeline ne demande donc pas de redémarrer le serveur ; une modification de `server.py`, si.
+
+### Surfaces calculées par le serveur
+
+Le navigateur ne charge les données détaillées d'une commune que lorsqu'elle est visible à l'écran (avec une
+marge de 15 %) ; au démarrage, il ne reçoit que le résumé (`meta.json`) et le contour de chaque commune, et la
+carte rouvre sur la dernière vue utilisée. Le bloc « Zone retenue » additionne pourtant toutes les communes
+actives : il est calculé par le serveur, avec les mêmes règles que l'application.
+
+```json
+POST /api/stats
+{"codes": ["94068", "94015"], "mode": "walk", "networks": ["rer", "transilien"],
+ "walk": 10, "air": {"no2": 20}, "bp": 3, "route": 60, "fer": 999}
+```
+
+`walk` : minutes (ou `null` sans filtre de temps) ; `air` : seuils en µg/m³ des polluants filtrés ;
+`bp` : indice Bruitparif maximal (1 à 3) ; `route`, `fer` : Lden strictement inférieur (999 = pas de
+filtre). La réponse donne, par commune, la surface totale, la surface retenue et la surface respectant
+chaque critère pris seul (m²). Les couches nécessaires sont gardées en mémoire après le premier appel.
+
+Servie par un simple serveur statique (`python3 -m http.server -d web`), l'application fonctionne en lecture
+seule : pas d'ajout de communes, et les surfaces ne portent que sur les communes chargées à l'écran.
 
 ## Construire en ligne de commande
 
@@ -34,15 +99,13 @@ taille de cellule…
 
 ## Organisation
 
-- `scripts/pipeline.py` : téléchargement et préparation d'une commune ;
-  écrit `web/data/communes/<code>/`, `web/data/index.json` et `web/data/global/`.
-- `scripts/server.py` : serveur local, API et file de construction. Les fichiers de données sont aussi
-  écrits compressés (`.gz`, ~5 fois plus petits) et servis ainsi aux navigateurs qui acceptent gzip.
-- Chargement à la demande : au démarrage, le navigateur ne reçoit que le résumé et le contour de chaque
-  commune ; les couches détaillées d'une commune sont chargées quand elle devient visible. Les surfaces
-  du bloc « Zone retenue » sont calculées par le serveur (`/api/stats`) pour toutes les communes actives.
-  La carte rouvre sur la dernière vue utilisée.
-- `web/` : application (Leaflet, sans dépendance de build).
+- `run.sh` : environnement Python et lancement du serveur.
+- `scripts/pipeline.py` : téléchargement et préparation d'une commune ; écrit `web/data/communes/<code>/`,
+  `web/data/index.json` et `web/data/global/` (gares et accès de toutes les communes).
+- `scripts/server.py` : serveur local (voir « Serveur »).
+- `scripts/build_data.py` : construction en ligne de commande.
+- `scripts/data_archive.py` : sauvegarde et restauration des données hors dépôt.
+- `web/` : application (Leaflet, sans étape de build).
 
 ## Données
 
@@ -77,16 +140,42 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
 
 ## Dépôt git et données
 
-Le dépôt ne contient que le code. Les données sont hors dépôt (`.gitignore`) : les communes construites
-(`web/data/`, ~150 Mo) et les téléchargements en cache (`data/raw/`, ~1,6 Go) se régénèrent avec les
-scripts, mais certaines sources sont lentes ou parfois indisponibles (Overpass, Airparif). Pour les
-conserver ou les transférer :
+Le dépôt ne contient que le code. Les données sont hors dépôt (`.gitignore`) :
+
+| Dossier | Contenu | Taille |
+|---|---|---|
+| `web/data/` | communes construites, index, gares | ~150 Mo (+ ~30 Mo de `.gz`) |
+| `data/raw/` | téléchargements en cache : dalles OSM, rasters Airparif, cartes de bruit, gares IDFM… | ~1,6 Go |
+
+Tout se régénère avec les scripts, mais certaines sources sont lentes ou parfois indisponibles (Overpass,
+Airparif). `scripts/data_archive.py` sauvegarde ces données dans une archive `.tar.gz` et les restaure ;
+il n'utilise que la bibliothèque standard (Python ≥ 3.12) et ne demande pas d'environnement virtuel.
 
 ```sh
-.venv/bin/python scripts/data_archive.py sauver                 # web/data + data/raw
-.venv/bin/python scripts/data_archive.py sauver --sans-cache    # web/data seulement (suffit pour l'appli)
-.venv/bin/python scripts/data_archive.py restaurer immo_map-donnees-AAAAMMJJ.tar.gz
+python3 scripts/data_archive.py save                     # web/data + data/raw (~225 Mo)
+python3 scripts/data_archive.py save --no-cache          # web/data seulement (~30 Mo, suffit pour l'appli)
+python3 scripts/data_archive.py save mes-donnees.tar.gz  # nom d'archive choisi
+python3 scripts/data_archive.py restore immo_map-data-AAAAMMJJ.tar.gz
 ```
 
-Sans archive, un dépôt fraîchement cloné démarre vide : `./run.sh` puis ajouter les communes depuis
-l'application (ou `scripts/build_data.py <codes INSEE>`).
+**`save`** crée par défaut `immo_map-data-AAAAMMJJ.tar.gz` à la racine du projet (ignoré par git). Sont omis
+les fichiers recalculables : les versions compressées `.gz` de `web/data/` (recréées au démarrage du serveur)
+et `data/raw/airbruit2024.gpkg` (conversion de `airbruit2024.zip`, refaite à la demande). Avec `--no-cache`,
+seul `web/data/` est archivé : l'application fonctionne, mais ajouter ou reconstruire une commune
+retéléchargera ses données.
+
+**`restore`** extrait l'archive à la racine du projet ; il refuse une archive contenant des chemins hors de
+`web/data/` et `data/raw/`. Les fichiers existants de même nom sont remplacés, les autres conservés.
+Ensuite, `./run.sh` recrée les versions compressées et reconstruit les éventuelles communes d'un format
+antérieur.
+
+Pour repartir d'un clone du dépôt :
+
+```sh
+git clone <dépôt> immo_map && cd immo_map
+python3 scripts/data_archive.py restore /chemin/immo_map-data-AAAAMMJJ.tar.gz
+./run.sh                                   # crée l'environnement Python au premier lancement
+```
+
+Sans archive, le clone démarre sans commune : ajoutez-les depuis l'application, ou avec
+`scripts/build_data.py <codes INSEE>`.
