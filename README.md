@@ -1,6 +1,7 @@
 # immo_map
 
-Carte interactive des zones situées à moins de N minutes à pied ou à vélo d'une gare RER ou Transilien, sous des seuils
+Carte interactive des zones situées à moins de N minutes à pied ou à vélo d'une gare RER ou Transilien ou d'une station
+de métro, sous des seuils
 de pollution de l'air et de bruit, pour n'importe quelle commune d'Île-de-France.
 
 ## Lancer l'application
@@ -111,9 +112,9 @@ taille de cellule…
 
 | Critère | Source | Détail |
 |---|---|---|
-| Temps à pied jusqu'à une gare | OpenStreetMap (Overpass, dalles en cache dans `data/raw/osm/`) + entrées de gares IDFM | plus court chemin sur le réseau piéton, 4,5 km/h, depuis chaque entrée ; temps réel par cellule (s) |
+| Temps à pied jusqu'à une gare | OpenStreetMap (Overpass, dalles en cache dans `data/raw/osm/`) + entrées de gares et bouches de métro IDFM | plus court chemin sur le réseau piéton, 4,5 km/h, depuis chaque entrée ; temps réel par cellule (s) |
 | Temps à vélo jusqu'à une gare | OpenStreetMap | plus court chemin vers la gare, sens uniques respectés sauf contresens cyclables, 15 km/h (6 km/h sur voies piétonnes), escaliers et voies interdites exclus |
-| Gares | IDFM, `emplacement-des-gares-idf` | gares RER (A–E) et Transilien (H, J, K, L, N, P, R, U, V) à moins de 4,5 km de la commune ; temps de marche calculé par réseau, combiné dans l'application selon les réseaux cochés |
+| Gares et stations | IDFM, `emplacement-des-gares-idf` | gares RER (A–E), Transilien (H, J, K, L, N, P, R, U, V) et stations de métro (1 à 14, 3bis, 7bis) à moins de 4,5 km de la commune ; temps calculé par réseau, combiné dans l'application selon les réseaux cochés |
 | NO₂, PM2.5, PM10 | Airparif, WCS 1.0 `namek.airparif.fr` | moyennes annuelles 2025 modélisées, 6,25 m |
 | Bruit routier | Bruitparif, carte stratégique de bruit E4 consolidée (`CSB4_w4echConso_Route_A_Lden`, MapProxy `raster.bruitparif.fr`) | Lden en 8 classes (< 45, 45-50, …, ≥ 75 dB), toutes rues ; images WMS reconverties en classes par leur couleur |
 | Bruit ferroviaire | Bruitparif, CSB E4 consolidée (`CSB4_w4echConso_Fer_A_Lden`), complétée par la DRIEAT (CSB E4 2022, SNCF et RATP) | Lden en 8 classes ; dans chaque cellule, la valeur la plus élevée des deux sources |

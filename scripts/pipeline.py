@@ -68,10 +68,11 @@ GRID_MARGIN_M = 300              # marge de la grille autour de la commune
 CELL_M = 15.0                    # taille de cellule en mètres Web Mercator (~10 m réels à 48,8°N)
 MAX_ACCESS_DIST_M = 400          # au-delà, un accès est jugé mal rattaché à la gare
 AIR_YEAR = 2025
-DATA_FORMAT = 9                  # à incrémenter quand le contenu des données change : le serveur reconstruit les anciennes
+DATA_FORMAT = 10                 # à incrémenter quand le contenu des données change : le serveur reconstruit les anciennes
 AIR_POLLUTANTS = ["no2", "pm25", "pm10"]
 # réseaux ferrés pris en compte pour le temps de marche : mode IDFM -> clé utilisée dans les données
-NETWORKS = {"RER": "rer", "TRAIN": "transilien"}
+NETWORKS = {"RER": "rer", "TRAIN": "transilien", "METRO": "metro"}
+NO_STATION = 65535               # indice de gare d'une cellule sans gare atteignable (uint16)
 TRAVEL_MODES = ["walk", "bike"]
 MODE_NAMES = {"walk": "à pied", "bike": "à vélo"}
 
@@ -210,16 +211,29 @@ def commune_geom(code):
 # --------------------------------------------------------------------------- gares
 
 def idfm_tables():
-    gares = gpd.read_file(cached(RAW / "idfm_gares_ferre.geojson", lambda: http_get(
+    # le nom du cache dépend des modes demandés : ajouter un réseau force un nouveau téléchargement
+    gares = gpd.read_file(cached(RAW / f"idfm_gares_{'_'.join(sorted(NETWORKS)).lower()}.geojson", lambda: http_get(
         f"{IDFM_API}/emplacement-des-gares-idf/exports/geojson",
         params={"where": " or ".join(f'mode="{m}"' for m in NETWORKS)}).content)).to_crs(2154)
-    gares = gares[gares.res_com.str.match(r"^(RER [A-E]|TRAIN [A-Z])$")]
+    gares = gares[gares.res_com.str.match(r"^(RER [A-E]|TRAIN [A-Z]|METRO \w+)$")]
     rel = pd.read_csv(cached(RAW / "idfm_relations_acces.csv", lambda: http_get(
         f"{IDFM_API}/relations-acces/exports/csv", params={"delimiter": ";"}).content), sep=";", dtype=str)
     acc = pd.read_csv(cached(RAW / "idfm_acces.csv", lambda: http_get(
         f"{IDFM_API}/acces/exports/csv", params={"delimiter": ";"}).content), sep=";", dtype=str)
     acc = acc[acc.accisentry.str.lower() == "true"].merge(rel[["zdaid", "accid"]], on="accid")
     return gares, acc
+
+
+def line_label(res_com):
+    """« TRAIN P » -> « Transilien P », « METRO 7bis » -> « Métro 7bis »."""
+    return res_com.replace("TRAIN ", "Transilien ").replace("METRO ", "Métro ")
+
+
+def line_order(label):
+    """RER, puis Transilien, puis métro ; numéros de métro dans l'ordre numérique."""
+    kind = 0 if label.startswith("RER") else 1 if label.startswith("Transilien") else 2
+    num = re.match(r"Métro (\d+)", label)
+    return (kind, int(num.group(1)) if num else 0, label)
 
 
 def stations_near(commune_l93):
@@ -233,7 +247,7 @@ def stations_near(commune_l93):
             "zdc": str(zdc),
             "nom": grp.nom_zdc.iloc[0],
             # « TRAIN P » -> « Transilien P » ; RER d'abord
-            "lignes": sorted({l.replace("TRAIN ", "Transilien ") for l in grp.res_com}, key=lambda l: (l[0] != "R", l)),
+            "lignes": sorted({line_label(l) for l in grp.res_com}, key=line_order),
             "networks": sorted({NETWORKS[m] for m in grp["mode"]}),
             "zdas": sorted(set(grp.id_ref_zda.astype(str))),
             "geometry": unary_union(list(grp.geometry)).centroid,
@@ -402,7 +416,7 @@ def travel_times(grid, stations, accesses, x, y, graphs, log):
         for net in NETWORKS.values():
             sel = acc[acc.station.map(lambda si: net in stations.networks.iloc[si])]
             t_cells = np.full(grid.shape, 65535, "uint16")
-            s_cells = np.full(grid.shape, 255, "uint8")
+            s_cells = np.full(grid.shape, NO_STATION, "uint16")
             if len(sel):
                 # un sommet virtuel par accès : arête voie la plus proche -> accès (coût = trajet d'approche)
                 d0, k0 = tree.query(np.column_stack([sel.geometry.x, sel.geometry.y]))
@@ -698,7 +712,7 @@ def build_commune(code, log=print):
         for mode in TRAVEL_MODES:
             for net in NETWORKS.values():
                 layers[f"{mode}_{net}"] = np.full(grid.shape, 65535, "uint16")
-                layers[f"station_{mode}_{net}"] = np.full(grid.shape, 255, "uint8")
+                layers[f"station_{mode}_{net}"] = np.full(grid.shape, NO_STATION, "uint16")
 
     log(f"{nom} : pollution de l'air (Airparif)")
     for pol in AIR_POLLUTANTS:

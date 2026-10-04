@@ -19,9 +19,12 @@ const COLORS = {
 };
 const EMPTY_PNG = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
 const STORAGE_KEY = "immo_map.state.v3";
-const NETWORK_COLORS = { rer: "#c2185b", transilien: "#1565c0" };
+const NETWORK_COLORS = { rer: "#c2185b", transilien: "#1565c0", metro: "#e0a100" };
+const NO_STATION = 65535;  // indice de gare d'une cellule sans gare atteignable
+// couleur d'une gare : RER, sinon Transilien, sinon métro
+const stationColor = (nets) => NETWORK_COLORS[["rer", "transilien", "metro"].find((n) => nets.includes(n)) || "rer"];
 const MAX_STATION_LABELS = 10;  // au-delà, les noms de gares visibles à l'écran sont masqués
-const DATA_FORMAT = 9;  // doit suivre DATA_FORMAT de scripts/pipeline.py
+const DATA_FORMAT = 10;  // doit suivre DATA_FORMAT de scripts/pipeline.py
 const MODE_LABELS = { walk: "À pied", bike: "À vélo" };
 const UNREACHED = 65535;  // temps (s) d'une cellule hors d'atteinte
 // classe Lden (borne basse ; 40 = moins de 45 dB ; 0 = non renseigné) -> libellé
@@ -35,9 +38,9 @@ const ICON_TARGET = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"
 const state = {
   inactive: [],        // codes des communes décochées
   walk: 10,
-  walkFilter: true,
+  walkFilter: true,    // false : le temps de trajet n'est pas un critère
   travelMode: "walk",  // "walk" ou "bike"
-  networks: { rer: true, transilien: true },  // gares prises en compte pour le temps de marche    // false : le temps de marche n'est pas un critère
+  networks: { rer: true, transilien: true, metro: true },  // réseaux pris en compte pour le temps de trajet
   air: {},             // seuils en µg/m³ ; absent = pas de filtre
   bpNoise: 3,
   ldenRoute: 999,
@@ -142,7 +145,7 @@ const selectedNetworks = () => Object.keys(state.networks).filter((n) => state.n
 // Temps de trajet en secondes (mode choisi) et gare la plus proche, tous réseaux choisis confondus
 function combineWalk(c) {
   const v = c.L, n = v.commune.length, mode = state.travelMode;
-  const walk = new Uint16Array(n).fill(UNREACHED), station = new Uint8Array(n).fill(255);
+  const walk = new Uint16Array(n).fill(UNREACHED), station = new Uint16Array(n).fill(NO_STATION);
   for (const net of selectedNetworks()) {
     const w = v[`${mode}_${net}`], s = v[`station_${mode}_${net}`];
     // format antérieur (en attente de reconstruction) : tranches de minutes en uint8, ignorées
@@ -271,7 +274,7 @@ function initMap() {
   }).addTo(map);
   stationsLayer = L.geoJSON(null, {
     pointToLayer: (f, ll) => L.circleMarker(ll, { pane: "stations", radius: 6, color: "#fff", weight: 2,
-      fillColor: NETWORK_COLORS[(f.properties.networks || "rer").includes("rer") ? "rer" : "transilien"], fillOpacity: 1 }),
+      fillColor: stationColor(f.properties.networks || "rer"), fillOpacity: 1 }),
     onEachFeature: (f, l) => l.bindTooltip(`${f.properties.nom} · ${f.properties.lignes}`,
       { permanent: true, direction: "right", offset: [8, 0], className: "station-label" }),
   }).addTo(map);
@@ -814,12 +817,12 @@ function hideHover() {
 
 // gare la plus rapide à atteindre depuis la cellule i pour un mode donné, réseaux cochés
 function bestStation(c, i, mode) {
-  let t = UNREACHED, si = 255;
+  let t = UNREACHED, si = NO_STATION;
   for (const net of selectedNetworks()) {
     const w = c.L[`${mode}_${net}`], s = c.L[`station_${mode}_${net}`];
     if (w instanceof Uint16Array && s && w[i] < t) { t = w[i]; si = s[i]; }
   }
-  return { t, st: si < 255 ? c.meta.stations[si] : null };
+  return { t, st: si < c.meta.stations.length ? c.meta.stations[si] : null };
 }
 
 // raisons d'exclusion d'un point : critère, valeur locale et seuil demandé
@@ -903,7 +906,7 @@ async function onMapClick(e) {
   const ok = cellPasses(c, i);
   const mark = (b) => b ? '<span class="ok">✓</span>' : '<span class="ko">✗</span>';
   const w = c.walkSel[i];
-  const st = c.stationSel[i] < 255 ? m.stations[c.stationSel[i]] : null;
+  const st = c.stationSel[i] < m.stations.length ? m.stations[c.stationSel[i]] : null;
   const walkTxt = fmtMin(w);
   const walkMark = state.walkFilter ? mark(ok.walk) : '<span class="note">–</span>';
   const routeTxt = ldenTxt, ferTxt = ldenTxt;

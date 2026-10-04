@@ -110,6 +110,7 @@ select { width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--l
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid #fff; box-shadow: 0 0 0 1px #bbb; }
 .dot.rer { background: #c2185b; }
 .dot.transilien { background: #1565c0; }
+.dot.metro { background: #e0a100; }
 .note { font-size: 12px; color: var(--muted); line-height: 1.4; margin: 4px 0 0; }
 
 .result { background: var(--accent-soft); margin: 0 -20px; padding: 16px 20px; border-top: none; }
