@@ -130,11 +130,6 @@ footer { font-size: 11px; color: var(--muted); line-height: 1.45; padding-top: 1
 footer p { margin: 0 0 4px; }
 
 .leaflet-popup-content { font-size: 13px; line-height: 1.45; min-width: 220px; }
-.leaflet-popup-content table { border-collapse: collapse; width: 100%; }
-.leaflet-popup-content td { padding: 1px 0; }
-.leaflet-popup-content td:last-child { text-align: right; font-variant-numeric: tabular-nums; padding-left: 10px; }
-.leaflet-popup-content .ok { color: var(--accent); font-weight: 600; }
-.leaflet-popup-content .ko { color: #b42318; font-weight: 600; }
 .station-label { background: rgba(255,255,255,.9); border: 1px solid #c9c6bd; border-radius: 4px; padding: 1px 5px; font-size: 11px; font-weight: 600; white-space: nowrap; box-shadow: none; }
 .station-label::before { display: none; }
 

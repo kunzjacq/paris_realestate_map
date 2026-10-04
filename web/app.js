@@ -23,7 +23,7 @@ const NETWORK_COLORS = { rer: "#c2185b", transilien: "#1565c0", metro: "#e0a100"
 const NO_STATION = 65535;  // indice de gare d'une cellule sans gare atteignable
 // couleur d'une gare : RER, sinon Transilien, sinon métro
 const stationColor = (nets) => NETWORK_COLORS[["rer", "transilien", "metro"].find((n) => nets.includes(n)) || "rer"];
-const MAX_STATION_LABELS = 10;  // au-delà, les noms de gares visibles à l'écran sont masqués
+const NEAR_STATIONS = 3;  // gares affichées : les plus proches de la souris
 const DATA_FORMAT = 10;  // doit suivre DATA_FORMAT de scripts/pipeline.py
 const MODE_LABELS = { walk: "À pied", bike: "À vélo" };
 const UNREACHED = 65535;  // temps (s) d'une cellule hors d'atteinte
@@ -52,7 +52,8 @@ const state = {
 
 let index = null;            // data/index.json
 const communes = new Map();  // code -> { meta, L, zone, context, outline, built }
-let map, isoLayer, stationsLayer, accesLayer;
+let map, isoLayer, stationsLayer, accesLayer, nearLayer;
+let accesByZdc = new Map();  // zdc -> marqueurs d'accès
 let airRange = {};
 let serverMode = false, lastVersion = null, firstFit = true;
 const canvas = document.createElement("canvas");
@@ -232,8 +233,14 @@ async function loadGlobalLayers() {
   if (stations) stationsLayer.addData(stations);
   stationMarkers = new Map();
   stationsLayer.eachLayer((l) => stationMarkers.set(l.feature.properties.zdc, l));
+  accesByZdc = new Map();
+  accesLayer.eachLayer((l) => {
+    const z = l.feature.properties.zdc;
+    if (!accesByZdc.has(z)) accesByZdc.set(z, []);
+    accesByZdc.get(z).push(l);
+  });
   hoverStation = null;
-  filterStations();
+  showNearStations(null);
 }
 
 async function syncIndex() {
@@ -272,22 +279,41 @@ function restoreView() {
 }
 
 // n'affiche que les gares des réseaux choisis
-function filterStations() {
+// seules les gares les plus proches de la souris sont affichées (avec nom et accès) : sur Paris,
+// des centaines de gares et des milliers d'accès surchargeaient la carte. La gare retenue dans la bulle
+// de survol (la plus rapide à atteindre) en fait toujours partie.
+let nearKey = "";
+function showNearStations(latlng, preferred = null) {
   const nets = selectedNetworks();
-  const visible = (f) => (f.properties.networks || "rer").split(",").some((n) => nets.includes(n));
-  const bounds = map.getBounds();
-  const shown = [];
-  stationsLayer.eachLayer((l) => {
-    const show = visible(l.feature);
-    l.setStyle({ opacity: show ? 1 : 0, fillOpacity: show ? 1 : 0 });
-    if (show && bounds.contains(l.getLatLng())) shown.push(l);
-  });
-  // noms affichés seulement s'il y en a peu à l'écran
-  const labels = shown.length <= MAX_STATION_LABELS;
-  stationsLayer.eachLayer((l) => {
-    const tt = l.getTooltip();
-    if (tt) tt.setOpacity(labels && shown.includes(l) ? 1 : 0);
-  });
+  let chosen = [];
+  if (latlng) {
+    const k = Math.cos((latlng.lat * Math.PI) / 180);
+    const cand = [];
+    stationsLayer.eachLayer((l) => {
+      const n = (l.feature.properties.networks || "rer").split(",");
+      if (!n.some((x) => nets.includes(x))) return;
+      const p = l.getLatLng(), dx = (p.lng - latlng.lng) * k, dy = p.lat - latlng.lat;
+      cand.push([dx * dx + dy * dy, l]);
+    });
+    cand.sort((a, b) => a[0] - b[0]);
+    chosen = cand.slice(0, NEAR_STATIONS).map((x) => x[1]);
+    const pref = preferred && stationMarkers.get(preferred);
+    if (pref && !chosen.includes(pref)) {
+      if (chosen.length < NEAR_STATIONS) chosen.push(pref); else chosen[NEAR_STATIONS - 1] = pref;
+    }
+  }
+  const key = chosen.map((l) => l.feature.properties.zdc).join("|");
+  if (key === nearKey) return;
+  nearKey = key;
+  nearLayer.clearLayers();
+  for (const l of chosen) {
+    for (const a of accesByZdc.get(l.feature.properties.zdc) || []) nearLayer.addLayer(a);
+    // étiquette du côté opposé à la souris, pour limiter les chevauchements entre gares proches
+    const tt = l.getTooltip(), west = l.getLatLng().lng < latlng.lng;
+    tt.options.direction = west ? "left" : "right";
+    tt.options.offset = west ? [-8, 0] : [8, 0];
+    nearLayer.addLayer(l);  // étiquette permanente ouverte à l'ajout
+  }
 }
 
 function fitTo(codes) {
@@ -321,19 +347,22 @@ function initMap() {
   labels.style.pointerEvents = "none";
   map.createPane("stations").style.zIndex = 640;
   isoLayer = L.layerGroup().addTo(map);
+  // accès et gares dessinés sur canvas (des centaines à milliers de points autour de Paris)
+  const pointRenderer = L.canvas({ padding: 0.3, pane: "stations" });
   accesLayer = L.geoJSON(null, {
-    pointToLayer: (f, ll) => L.circleMarker(ll, { pane: "stations", radius: 2.5, color: "#7a1d4e", weight: 1, fillOpacity: 1 }),
+    pointToLayer: (f, ll) => L.circleMarker(ll, { pane: "stations", renderer: pointRenderer, radius: 2.5, color: "#7a1d4e", weight: 1, fillOpacity: 1 }),
     onEachFeature: (f, l) => l.bindTooltip(`Accès : ${f.properties.nom_acces}`),
-  }).addTo(map);
+  });  // hors carte : seuls les accès des gares proches sont affichés (nearLayer)
   stationsLayer = L.geoJSON(null, {
-    pointToLayer: (f, ll) => L.circleMarker(ll, { pane: "stations", radius: 6, color: "#fff", weight: 2,
+    pointToLayer: (f, ll) => L.circleMarker(ll, { pane: "stations", renderer: pointRenderer, radius: 6, color: "#fff", weight: 2,
       fillColor: stationColor(f.properties.networks || "rer"), fillOpacity: 1 }),
     onEachFeature: (f, l) => l.bindTooltip(`${f.properties.nom} · ${f.properties.lignes}`,
       { permanent: true, direction: "right", offset: [8, 0], className: "station-label" }),
-  }).addTo(map);
+  });
+  nearLayer = L.layerGroup().addTo(map);
 
   map.on("click", onMapClick);
-  map.on("moveend", () => { filterStations(); ensureVisibleLoaded(); drawVisibleZones(); drawIso(); saveView(); });
+  map.on("moveend", () => { ensureVisibleLoaded(); drawVisibleZones(); drawIso(); saveView(); });
   const labelsByZoom = () => map.getContainer().classList.toggle("labels-off", map.getZoom() < LABEL_MIN_ZOOM);
   map.on("zoomend", labelsByZoom);
   labelsByZoom();
@@ -415,11 +444,18 @@ const zoneRenderer = L.canvas({ padding: 0.3, pane: "zone" });  // panneau cré�
 const isoRenderer = L.canvas({ padding: 0.3, pane: "iso" });
 const ISO_STYLE = { pane: "iso", renderer: isoRenderer, color: "#08519c", weight: 1.5, dashArray: "5 4", fill: false, interactive: false };
 
-// masque 0/1 -> champ flouté (boîte 3×3 deux fois ≈ gaussienne), bordé d'une cellule à 0
-function blurMask(mask, W, H) {
-  const W2 = W + 2, H2 = H + 2;
+// masque 0/1 -> champ flouté (boîte 3×3 deux fois ≈ gaussienne), bordé d'une cellule à 0.
+// Avec k > 1, le masque est d'abord regroupé par blocs k×k (part de cellules retenues dans le bloc) :
+// moins de points de contour quand une cellule fait moins d'un pixel à l'écran.
+function blurMask(mask, W, H, k = 1) {
+  const Wd = Math.ceil(W / k), Hd = Math.ceil(H / k);
+  const W2 = Wd + 2, H2 = Hd + 2;
   let a = new Float32Array(W2 * H2), b = new Float32Array(W2 * H2);
-  for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) if (mask[r * W + c]) a[(r + 1) * W2 + c + 1] = 1;
+  const share = 1 / (k * k);
+  for (let r = 0; r < H; r++) {
+    const row = (Math.floor(r / k) + 1) * W2 + 1;
+    for (let c = 0; c < W; c++) if (mask[r * W + c]) a[row + Math.floor(c / k)] += share;
+  }
   for (let pass = 0; pass < 2; pass++) {
     b.fill(0);
     for (let r = 0; r < H2; r++) for (let c = 1; c < W2 - 1; c++) {
@@ -498,11 +534,39 @@ function chaikin(ring, iterations = 2) {
 }
 
 // contours lissés d'un masque de cellules, en LatLng
+// simplification de Douglas-Peucker d'un anneau fermé (tolérance dans l'unité des coordonnées)
+function simplify(ring, tol) {
+  if (ring.length < 8 || tol <= 0) return ring;
+  const keep = new Uint8Array(ring.length), tol2 = tol * tol;
+  keep[0] = keep[ring.length - 1] = 1;
+  const stack = [[0, ring.length - 1]];
+  while (stack.length) {
+    const [i0, i1] = stack.pop();
+    const [ax, ay] = ring[i0], [bx, by] = ring[i1];
+    const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy || 1;
+    let worst = -1, wd = tol2;
+    for (let i = i0 + 1; i < i1; i++) {
+      const [px, py] = ring[i];
+      const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+      const ex = px - ax - t * dx, ey = py - ay - t * dy, d2 = ex * ex + ey * ey;
+      if (d2 > wd) { wd = d2; worst = i; }
+    }
+    if (worst > 0) { keep[worst] = 1; stack.push([i0, worst], [worst, i1]); }
+  }
+  const out = ring.filter((_, i) => keep[i]);
+  return out.length >= 3 ? out : ring;
+}
+
+// contours lissés d'un masque de cellules, en LatLng, détaillés selon le zoom courant
 function smoothContours(mask, meta) {
-  const { f, W2, H2 } = blurMask(mask, meta.width, meta.height);
   const { left, top, cell } = meta.merc;
-  return marchingSquares(f, W2, H2).map((ring) => chaikin(ring).map(([c, r]) =>
-    L.CRS.EPSG3857.unproject(L.point(left + (c - 0.5) * cell, top - (r - 0.5) * cell))));
+  const mpp = 156543.03392804097 / Math.pow(2, Math.round(map.getZoom()));  // mètres Mercator par pixel
+  let k = 1;
+  while (cell * k * 2 <= mpp) k *= 2;  // cellules regroupées tant qu'elles font moins d'un pixel
+  const { f, W2, H2 } = blurMask(mask, meta.width, meta.height, k);
+  const step = cell * k, tol = (0.35 * mpp) / step;  // ~1/3 de pixel, en cellules regroupées
+  return marchingSquares(f, W2, H2).map((ring) => simplify(chaikin(ring), tol).map(([c, r]) =>
+    L.CRS.EPSG3857.unproject(L.point(left + (c - 1) * step + step / 2, top - (r - 1) * step - step / 2))));
 }
 
 // anneaux (LatLng) d'une géométrie GeoJSON Polygon / MultiPolygon
@@ -529,8 +593,9 @@ function drawZone(c, res) {
   c.zone.addLayer(L.polygon([...c.outlineRings, ...rings],
     { ...base, stroke: false, fillColor: "#1b1b20", fillOpacity: st.dim }));
   if (!rings.length) return;
-  if (st.fill) c.zone.addLayer(L.polygon(rings, { ...base, stroke: false, fillColor: st.fill, fillOpacity: st.fillOpacity }));
-  c.zone.addLayer(L.polygon(rings, { ...base, fill: false, color: "#fff", weight: 5, opacity: 0.9 }));  // liseré
+  // remplissage éventuel et liseré blanc dans un même tracé, puis le trait par-dessus
+  c.zone.addLayer(L.polygon(rings, { ...base, fill: !!st.fill, fillColor: st.fill || "#000",
+    fillOpacity: st.fillOpacity, color: "#fff", weight: 5, opacity: 0.9 }));
   c.zone.addLayer(L.polygon(rings, { ...base, fill: false, color: st.line, weight: 2.5 }));
 }
 
@@ -587,7 +652,7 @@ function renderLegend() {
 // (même lissage que la zone retenue) ; seulement pour les communes visibles, et si le réglage a changé
 function drawIso() {
   const key = state.showIso && state.walkFilter
-    ? `${state.travelMode}|${selectedNetworks().join("+")}|${state.walk}` : "";
+    ? `${state.travelMode}|${selectedNetworks().join("+")}|${state.walk}|${Math.round(map.getZoom())}` : "";
   for (const c of loadedCommunes()) {
     if (c.isoKey === key || !isVisible(c)) continue;
     c.isoKey = key;
@@ -632,8 +697,11 @@ function isVisible(c) {
 }
 
 function drawVisibleZones() {
+  const z = Math.round(map.getZoom());  // le détail des contours dépend du zoom
   for (const c of loadedCommunes()) {
-    if (c.zoneDirty && isVisible(c)) { drawZone(c, c.lastResult); c.zoneDirty = false; }
+    if ((c.zoneDirty || c.zoneZoom !== z) && isVisible(c)) {
+      drawZone(c, c.lastResult); c.zoneDirty = false; c.zoneZoom = z;
+    }
   }
 }
 
@@ -858,7 +926,8 @@ function initHover() {
     hoverEvt = e;
     if (!hoverFrame) hoverFrame = requestAnimationFrame(renderHover);
   });
-  map.on("mouseout", hideHover);
+  // sortie de la carte (vers le menu…) : événement du navigateur, plus fiable que « mouseout » de Leaflet
+  map.getContainer().addEventListener("mouseleave", () => { hoverEvt = null; hideHover(); showNearStations(null); });
   map.on("movestart", hideHover);  // la bulle ne correspondrait plus au point sous la souris
 }
 
@@ -910,7 +979,7 @@ function renderHover() {
   hoverFrame = 0;
   const e = hoverEvt;
   const hit = e && cellAt(e.latlng);
-  if (!hit) { hideHover(); return; }
+  if (!hit) { hideHover(); if (e) showNearStations(e.latlng); return; }
   const { c, i } = hit;
   const limit = state.walk, mode = state.travelMode;
   const res = { walk: bestStation(c, i, "walk"), bike: bestStation(c, i, "bike") };
@@ -939,6 +1008,14 @@ function renderHover() {
     <tr${bad("fer")}><td>${sw("lden_fer", v.lden_fer[i])}Bruit ferroviaire</td><td>${ldenTxt(v.lden_fer[i])}</td></tr>
     <tr${bad("bp")}><td>${sw("bp_noise", v.bp_noise[i])}Indice global</td><td>${BP_NOISE_LABELS[v.bp_noise[i]]}</td></tr>
   </table>`;
+  // pollution de l'air, pastille selon les repères : vert sous la recommandation OMS,
+  // jaune jusqu'à la valeur limite UE 2030, rouge au-delà
+  const airSw = (a, x) => `<i class="sw" style="background:${x <= a.oms ? "#4bc700" : x <= a.ue2030 ? "#fdd049" : "#d7301f"}"
+    title="OMS ${a.oms} · UE 2030 ${a.ue2030} µg/m³"></i>`;
+  html += `<table class="noise">${AIR.map((a) => {
+    const x = v[a.key][i] / 10;
+    return `<tr${bad(a.key)}><td>${airSw(a, x)}${a.label} ${c.meta.air_year}</td><td>${fmt(x)} µg/m³</td></tr>`;
+  }).join("")}</table>`;
   html += exclusionHtml(c, i, ok);
   hoverBox.innerHTML = html;
   hoverBox.hidden = false;
@@ -947,43 +1024,21 @@ function renderHover() {
   const left = p.x + 16 + hoverBox.offsetWidth > size.x ? p.x - 16 - hoverBox.offsetWidth : p.x + 16;
   const top = Math.min(p.y + 16, size.y - hoverBox.offsetHeight - 4);
   hoverBox.style.transform = `translate(${left}px, ${top}px)`;
+  showNearStations(e.latlng, sel.st && sel.st.zdc);
   highlightStation(reached ? sel.st.zdc : null);
 }
 
+// clic hors des communes chargées : proposer d'ajouter la commune (les informations d'un point
+// d'une commune chargée sont dans la bulle de survol)
 async function onMapClick(e) {
-  const hit = cellAt(e.latlng);
-  if (!hit) {
-    if (!serverMode) return;
-    const found = await getJSON(`api/at?lon=${e.latlng.lng}&lat=${e.latlng.lat}`).catch(() => []);
-    if (!found.length) return;
-    const f = found[0];
-    const pop = L.popup().setLatLng(e.latlng).setContent(
-      `<strong>${f.nom}</strong><br><span class="note">Commune non chargée.</span>
-       <button type="button" class="btn primary" id="add-here">Ajouter cette commune</button>`).openOn(map);
-    $("add-here").addEventListener("click", () => { map.closePopup(pop); requestBuild([f.code]); });
-    return;
-  }
-  const { c, i } = hit, v = c.L, m = c.meta;
-  const ok = cellPasses(c, i);
-  const mark = (b) => b ? '<span class="ok">✓</span>' : '<span class="ko">✗</span>';
-  const w = c.walkSel[i];
-  const st = c.stationSel[i] < m.stations.length ? m.stations[c.stationSel[i]] : null;
-  const walkTxt = fmtMin(w);
-  const walkMark = state.walkFilter ? mark(ok.walk) : '<span class="note">–</span>';
-  const routeTxt = ldenTxt, ferTxt = ldenTxt;
-  const all = Object.values(ok).every(Boolean);
-  L.popup().setLatLng(e.latlng).setContent(`
-    <strong>${m.nom}</strong>
-    <table>
-      <tr><td>${walkMark} ${MODE_LABELS[state.travelMode]}</td><td>${walkTxt}${st ? `<br><small>${st.nom}<br>${st.lignes.join(" + ")}</small>` : ""}</td></tr>
-      ${AIR.map((a) => `<tr><td>${mark(ok[a.key])} ${a.label} ${m.air_year}</td><td>${fmt(v[a.key][i] / 10)} µg/m³</td></tr>`).join("")}
-      <tr><td>${mark(ok.route)} Bruit routier</td><td>${routeTxt(v.lden_route[i])}</td></tr>
-      <tr><td>${mark(ok.fer)} Bruit ferroviaire</td><td>${ferTxt(v.lden_fer[i])}</td></tr>
-      <tr><td>${mark(ok.bp)} Indice global</td><td>${BP_NOISE_LABELS[v.bp_noise[i]]}</td></tr>
-    </table>
-    <div style="margin-top:6px">${!isActive(c.code) ? '<span class="note">Commune décochée</span>'
-      : all ? '<span class="ok">Dans la zone retenue</span>' : '<span class="ko">Hors zone retenue</span>'}</div>
-  `).openOn(map);
+  if (!serverMode || cellAt(e.latlng)) return;
+  const found = await getJSON(`api/at?lon=${e.latlng.lng}&lat=${e.latlng.lat}`).catch(() => []);
+  if (!found.length || communes.has(found[0].code)) return;
+  const f = found[0];
+  const pop = L.popup().setLatLng(e.latlng).setContent(
+    `<strong>${f.nom}</strong><br><span class="note">Commune non chargée.</span>
+     <button type="button" class="btn primary" id="add-here">Ajouter cette commune</button>`).openOn(map);
+  $("add-here").addEventListener("click", () => { map.closePopup(pop); requestBuild([f.code]); });
 }
 
 // ------------------------------------------------------------------ contrôles
@@ -1080,7 +1135,7 @@ function initControls() {
     box.addEventListener("change", () => {
       state.networks[net] = box.checked;
       for (const c of loadedCommunes()) combineWalk(c);
-      filterStations();
+      showNearStations(hoverEvt && hoverEvt.latlng);
       update({ context: state.context === "walk" });
     });
   }
