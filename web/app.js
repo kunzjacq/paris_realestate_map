@@ -1097,15 +1097,23 @@ function renderHover() {
 
 // clic hors des communes chargées : proposer d'ajouter la commune (les informations d'un point
 // d'une commune chargée sont dans la bulle de survol)
+let clickSeq = 0;
 async function onMapClick(e) {
   if (!serverMode || cellAt(e.latlng)) return;
+  const seq = ++clickSeq;
   const found = await getJSON(`api/at?lon=${e.latlng.lng}&lat=${e.latlng.lat}`).catch(() => []);
-  if (!found.length || communes.has(found[0].code)) return;
+  // un clic plus récent a eu lieu pendant la recherche : sa bulle prime
+  if (seq !== clickSeq || !found.length || communes.has(found[0].code)) return;
   const f = found[0];
-  const pop = L.popup().setLatLng(e.latlng).setContent(
-    `<strong>${f.nom}</strong><br><span class="note">Commune non chargée.</span>
-     <button type="button" class="btn primary" id="add-here">Ajouter cette commune</button>`).openOn(map);
-  $("add-here").addEventListener("click", () => { map.closePopup(pop); requestBuild([f.code]); });
+  // bulle construite comme élément : le bouton est branché directement. (Avec un identifiant, la bulle
+  // précédente, encore présente pendant son animation de fermeture, captait l'action.)
+  const content = L.DomUtil.create("div");
+  content.innerHTML = `<strong>${f.nom}</strong><br><span class="note">Commune non chargée.</span>`;
+  const btn = L.DomUtil.create("button", "btn primary", content);
+  btn.type = "button";
+  btn.textContent = "Ajouter cette commune";
+  const pop = L.popup().setLatLng(e.latlng).setContent(content).openOn(map);
+  btn.addEventListener("click", () => { map.closePopup(pop); requestBuild([f.code]); });
 }
 
 // ------------------------------------------------------------------ contrôles
