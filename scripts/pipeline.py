@@ -276,7 +276,25 @@ def stations_near(commune_l93):
 # Les temps de trajet sont calculés localement sur le réseau OpenStreetMap (plus court chemin depuis
 # les entrées des gares), ce qui donne un temps réel en chaque point et pas seulement des tranches.
 
-def osm_tile(i, j):
+def overpass_wait_slot(url, log):
+    """Attend qu'un créneau soit libre pour notre IP (page /status du serveur Overpass)."""
+    status_url = url.rsplit("/", 1)[0] + "/status"
+    for _ in range(10):
+        try:
+            txt = requests.get(status_url, headers=HEADERS, timeout=20).text
+        except requests.RequestException:
+            return  # page d'état indisponible : on tente la requête
+        if "slots available now" in txt or "Rate limit: 0" in txt:
+            return
+        waits = [int(w) for w in re.findall(r"in (\d+) seconds", txt)]
+        if not waits:
+            return
+        wait = min(min(waits) + 1, 120)
+        log(f"Overpass : créneau libre dans {wait} s")
+        time.sleep(wait)
+
+
+def osm_tile(i, j, log=print):
     """Voies (highway=*) d'une dalle OSM, téléchargée une fois via Overpass."""
     d = RAW / "osm"
     d.mkdir(exist_ok=True)
@@ -285,17 +303,27 @@ def osm_tile(i, j):
     query = f'[out:json][timeout:180];way["highway"]({s:.4f},{w:.4f},{s + dlat:.4f},{w + dlon:.4f});out body;>;out skel qt;'
 
     def fetch():
+        # serveur principal d'abord (le plus rapide), en respectant sa limite de débit ;
+        # miroirs en dernier recours, avec un délai plus court (souvent lents ou saturés)
+        plan = [OVERPASS[0]] * 4 + OVERPASS[1:] + [OVERPASS[0]] * 2
         err = ""
-        for attempt in range(9):
-            url = OVERPASS[attempt % len(OVERPASS)]
+        for attempt, url in enumerate(plan):
+            host = url.split("/")[2]
+            if url == OVERPASS[0]:
+                overpass_wait_slot(url, log)
             try:
-                r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=300)
+                r = requests.post(url, data={"data": query}, headers=HEADERS,
+                                  timeout=240 if url == OVERPASS[0] else 120)
                 if r.status_code == 200 and r.content[:1] == b"{":
                     return r.content
                 err = f"HTTP {r.status_code}"
             except requests.RequestException as e:
-                err = str(e)
-            time.sleep(15 * (attempt // len(OVERPASS) + 1))  # 429 / 504 : serveurs chargés
+                err = type(e).__name__
+            if attempt == len(plan) - 1:
+                break
+            wait = 15 * min(attempt + 1, 4)  # 429 / 504 : serveur chargé
+            log(f"Overpass, essai {attempt + 1} ({host}) : {err}, nouvel essai dans {wait} s")
+            time.sleep(wait)
         raise RuntimeError(f"Overpass indisponible ({err}), réessayez plus tard")
     return json.loads(cached(d / f"{i}_{j}.json", fetch).read_bytes())
 
@@ -308,7 +336,7 @@ def load_osm(bounds_wgs, log):
     nodes, ways = {}, {}
     for k, (i, j) in enumerate(tiles):
         log(f"réseau OSM : dalle {k + 1}/{len(tiles)}")
-        for el in osm_tile(i, j)["elements"]:
+        for el in osm_tile(i, j, log)["elements"]:
             if el["type"] == "node":
                 nodes[el["id"]] = (el["lon"], el["lat"])
             elif el["type"] == "way":
