@@ -231,6 +231,9 @@ def main():
     n = pipeline.add_missing_air_ranges()
     if n:
         print(f"résumé des plages de pollution ajouté à {n} communes", flush=True)
+    n = pipeline.pack_missing()
+    if n:
+        print(f"paquet des couches créé pour {n} communes", flush=True)
     n = pipeline.compress_missing()
     if n:
         print(f"{n} fichiers de données compressés", flush=True)

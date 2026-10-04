@@ -98,10 +98,24 @@ async function loadCommuneMeta(code, built) {
 async function loadCommuneData(c) {
   const base = `data/communes/${c.code}/`;
   const layers = {};
-  await Promise.all(Object.entries(c.meta.layers).map(async ([name, info]) => {
-    const buf = await (await fetch(`${base}${name}.bin`, { cache: "no-cache" })).arrayBuffer();
-    layers[name] = info.dtype === "uint16" ? new Uint16Array(buf) : new Uint8Array(buf);
-  }));
+  const pack = await fetch(`${base}layers.pack`, { cache: "no-cache" });
+  if (pack.ok) {
+    // une seule requête : couches à la suite, dans l'ordre de meta.layers
+    const buf = await pack.arrayBuffer(), n = c.meta.width * c.meta.height;
+    let off = 0;
+    for (const [name, info] of Object.entries(c.meta.layers)) {
+      const T = info.dtype === "uint16" ? Uint16Array : Uint8Array;
+      layers[name] = new T(buf.slice(off, off + n * T.BYTES_PER_ELEMENT));
+      off += n * T.BYTES_PER_ELEMENT;
+    }
+  } else {  // commune construite avant les paquets (serveur pas encore relancé)
+    for (const [name, info] of Object.entries(c.meta.layers)) {
+      const r = await fetch(`${base}${name}.bin`, { cache: "no-cache" });
+      if (!r.ok) throw new Error(`${base}${name}.bin : HTTP ${r.status}`);
+      const buf = await r.arrayBuffer();
+      layers[name] = info.dtype === "uint16" ? new Uint16Array(buf) : new Uint8Array(buf);
+    }
+  }
   if (communes.get(c.code) !== c) return;  // commune retirée ou reconstruite entre-temps
   Object.assign(c, {
     L: layers, loaded: true,
@@ -113,25 +127,37 @@ async function loadCommuneData(c) {
   combineWalk(c);
 }
 
-// charge les communes visibles (avec une marge) pas encore chargées, puis les dessine
+// charge les communes visibles (avec une marge) pas encore chargées, puis les dessine.
+// Au plus MAX_PARALLEL_LOADS à la fois, les plus proches du centre de la vue d'abord (trop de requêtes
+// simultanées font refuser des chargements par le navigateur) ; un échec est réessayé un peu plus tard.
 const LOAD_MARGIN = 0.15;  // marge autour de la vue (fraction) pour anticiper les petits déplacements
+const MAX_PARALLEL_LOADS = 4, RETRY_MS = 3000;
+let retryTimer = 0;
 function ensureVisibleLoaded() {
-  const view = map.getBounds().pad(LOAD_MARGIN);
-  const todo = [...communes.values()].filter((c) => !c.loaded && !c.loading && view.intersects(boundsOf(c)));
-  if (!todo.length) return;
-  showLoading(todo.length);
-  todo.forEach((c) => {
-    c.loading = loadCommuneData(c).catch((e) => console.error(e)).finally(() => {
-      c.loading = null;
-      if (![...communes.values()].some((x) => x.loading)) showLoading(0);
-      if (!c.loaded) return;
-      c.lastResult = computeCommune(c, thresholds());
-      c.zoneDirty = true;
-      drawVisibleZones();
-      drawContext(c);
-      drawIso();
-    });
-  });
+  const view = map.getBounds().pad(LOAD_MARGIN), center = map.getCenter(), now = Date.now();
+  const all = [...communes.values()];
+  const running = all.filter((c) => c.loading).length;
+  const todo = all.filter((c) => !c.loaded && !c.loading && view.intersects(boundsOf(c)));
+  const ready = todo.filter((c) => !(c.failedAt > now - RETRY_MS))
+    .sort((a, b) => center.distanceTo(boundsOf(a).getCenter()) - center.distanceTo(boundsOf(b).getCenter()));
+  showLoading(todo.length + running);
+  if (todo.length > ready.length && !retryTimer) {
+    retryTimer = setTimeout(() => { retryTimer = 0; ensureVisibleLoaded(); }, RETRY_MS);
+  }
+  for (const c of ready.slice(0, Math.max(0, MAX_PARALLEL_LOADS - running))) {
+    c.loading = loadCommuneData(c).catch((e) => { console.warn("chargement à réessayer :", c.meta.nom, e); c.failedAt = Date.now(); })
+      .finally(() => {
+        c.loading = null;
+        if (c.loaded) {
+          c.lastResult = computeCommune(c, thresholds());
+          c.zoneDirty = true;
+          drawVisibleZones();
+          drawContext(c);
+          drawIso();
+        }
+        ensureVisibleLoaded();  // commune suivante de la file
+      });
+  }
 }
 
 function showLoading(n) {

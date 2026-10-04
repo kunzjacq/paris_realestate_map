@@ -39,8 +39,10 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
 ### Fichiers servis
 
 - `web/` : l'application (`index.html`, `app.js`, `style.css`, Leaflet dans `web/vendor/`).
-- `web/data/` : les données. Chaque fichier existe aussi en version compressée (`.gz`, ~5 fois plus
-  petite), envoyée avec `Content-Encoding: gzip` aux navigateurs qui l'acceptent.
+- `web/data/` : les données. Les couches de chaque commune sont aussi regroupées dans un seul fichier
+  (`layers.pack`, une requête par commune au lieu d'une vingtaine). Chaque fichier existe aussi en version
+  compressée (`.gz`, ~5 fois plus petite), envoyée avec `Content-Encoding: gzip` aux navigateurs qui
+  l'acceptent. Le serveur crée au démarrage les paquets et versions compressées manquants.
 - Tous les fichiers servis portent `Cache-Control: no-cache` : le navigateur revérifie chaque fichier (requête
   conditionnelle, réponse 304 s'il n'a pas changé) et ne garde donc jamais une ancienne version d'`app.js`
   ou des données après une mise à jour.
@@ -93,7 +95,8 @@ Aucune donnée n'est donc effacée avant que sa nouvelle version soit disponible
 ### Surfaces calculées par le serveur
 
 Le navigateur ne charge les données détaillées d'une commune que lorsqu'elle est visible à l'écran (avec une
-marge de 15 %) ; au démarrage, il ne reçoit que le résumé (`meta.json`) et le contour de chaque commune, et la
+marge de 15 %), quatre communes à la fois au plus, les plus proches du centre de la vue d'abord ; un
+chargement qui échoue est réessayé quelques secondes plus tard ; au démarrage, il ne reçoit que le résumé (`meta.json`) et le contour de chaque commune, et la
 carte rouvre sur la dernière vue utilisée. Le bloc « Zone retenue » additionne pourtant toutes les communes
 actives : il est calculé par le serveur, avec les mêmes règles que l'application.
 
@@ -183,7 +186,8 @@ python3 scripts/data_archive.py restore immo_map-data-AAAAMMJJ.tar.gz
 ```
 
 **`save`** crée par défaut `immo_map-data-AAAAMMJJ.tar.gz` à la racine du projet (ignoré par git). Sont omis
-les fichiers recalculables : les versions compressées `.gz` de `web/data/` (recréées au démarrage du serveur)
+les fichiers recalculables : les versions compressées `.gz` et les paquets `layers.pack` de `web/data/`
+(recréés au démarrage du serveur)
 et `data/raw/airbruit2024.gpkg` (conversion de `airbruit2024.zip`, refaite à la demande). Avec `--no-cache`,
 seul `web/data/` est archivé : l'application fonctionne, mais ajouter ou reconstruire une commune
 retéléchargera ses données.

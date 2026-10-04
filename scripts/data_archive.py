@@ -9,6 +9,7 @@ save        crée une archive avec web/data/ (communes construites, suffisant po
             et data/raw/ (téléchargements : utile pour ajouter ou reconstruire des communes sans tout
             retélécharger). Sont omis les fichiers recalculables :
               - web/data/**/*.gz : versions compressées, recréées au démarrage du serveur ;
+              - web/data/communes/*/layers.pack : couches regroupées, recréées au démarrage du serveur ;
               - data/raw/airbruit2024.gpkg : conversion de airbruit2024.zip, refaite à la demande.
             --no-cache : web/data/ seulement (archive bien plus petite).
             Nom par défaut : immo_map-data-AAAAMMJJ.tar.gz à la racine du projet.
@@ -28,7 +29,7 @@ SKIP_FILES = {"data/raw/airbruit2024.gpkg"}
 def keep(rel):
     if rel in SKIP_FILES or rel.endswith(SKIP_SUFFIXES) or ".part" in rel:
         return False
-    if rel.startswith("web/data/") and rel.endswith(".gz"):
+    if rel.startswith("web/data/") and (rel.endswith(".gz") or rel.endswith("/layers.pack")):
         return False
     return True
 

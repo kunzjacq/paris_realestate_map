@@ -796,6 +796,7 @@ def build_commune(code, log=print):
     for name, arr in layers.items():
         (tmp / f"{name}.bin").write_bytes(np.ascontiguousarray(arr).tobytes())
         meta_layers[name] = {"dtype": str(arr.dtype)}
+    write_pack(tmp, meta_layers)
 
     commune.to_file(tmp / "commune.geojson", driver="GeoJSON")
     st = stations.to_crs(4326)
@@ -1101,9 +1102,36 @@ def refresh_stale(log=print, on_commune=None, max_age_days=MAX_AGE_DAYS):
     return errors
 
 
+# --------------------------------------------------------------------------- paquet des couches
+
+PACK_NAME = "layers.pack"  # toutes les couches d'une commune, dans l'ordre de meta["layers"] : une seule requête
+
+
+def write_pack(d, meta_layers):
+    tmp = d / f"{PACK_NAME}.{os.getpid()}.tmp"
+    with open(tmp, "wb") as out:
+        for name in meta_layers:
+            out.write((d / f"{name}.bin").read_bytes())
+    os.replace(tmp, d / PACK_NAME)
+
+
+def pack_missing():
+    """Crée layers.pack pour les communes construites avant son introduction (ou plus ancien que meta.json)."""
+    n = 0
+    for d in COMMUNES_DIR.iterdir():
+        meta_f, pack = d / "meta.json", d / PACK_NAME
+        if d.name.startswith(".") or not meta_f.exists():
+            continue
+        if not pack.exists() or pack.stat().st_mtime < max((d / f"{k}.bin").stat().st_mtime
+                                                            for k in json.loads(meta_f.read_text())["layers"]):
+            write_pack(d, json.loads(meta_f.read_text())["layers"])
+            n += 1
+    return n
+
+
 # --------------------------------------------------------------------------- compression
 
-COMPRESSED_SUFFIXES = (".bin", ".geojson", ".json")
+COMPRESSED_SUFFIXES = (".bin", ".geojson", ".json", ".pack")
 
 
 def write_gz(path):
