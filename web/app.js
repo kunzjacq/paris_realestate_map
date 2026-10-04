@@ -214,6 +214,35 @@ function labelPoint(geo) {
   return best;
 }
 
+// ------------------------------------------------------------------ communes non téléchargées
+// Hors des communes téléchargées, le fond de carte intact ressemblait aux zones retenues (claires) :
+// on le recouvre d'un voile gris hachuré, dessiné en SVG pour pouvoir utiliser un motif.
+
+let unloadedLayer = null, unloadedRenderer = null;
+const OUTER_RING = [[47.0, 0.0], [47.0, 5.0], [50.5, 5.0], [50.5, 0.0]];  // largement autour de l'Île-de-France
+
+function drawUnloadedMask() {
+  if (!unloadedRenderer) unloadedRenderer = L.svg({ pane: "unloaded", padding: 0.5 });
+  if (unloadedLayer) map.removeLayer(unloadedLayer);
+  const holes = [...communes.values()].flatMap((c) => c.outlineRings);
+  unloadedLayer = L.polygon([OUTER_RING, ...holes], {
+    renderer: unloadedRenderer, pane: "unloaded", interactive: false, stroke: false,
+    fillColor: "url(#unloaded-hatch)", fillOpacity: 1, fillRule: "evenodd",
+  }).addTo(map);
+  // motif : fond gris léger et hachures diagonales
+  const svg = unloadedRenderer._container;
+  if (svg && !svg.querySelector("#unloaded-hatch")) {
+    const ns = "http://www.w3.org/2000/svg";
+    const defs = document.createElementNS(ns, "defs");
+    defs.innerHTML = `<pattern id="unloaded-hatch" width="9" height="9" patternUnits="userSpaceOnUse"
+        patternTransform="rotate(45)">
+      <rect width="9" height="9" fill="#6b6f76" fill-opacity="0.28"/>
+      <line x1="0" y1="0" x2="0" y2="9" stroke="#4a4e55" stroke-opacity="0.45" stroke-width="2"/>
+    </pattern>`;
+    svg.insertBefore(defs, svg.firstChild);
+  }
+}
+
 const boundsOf = (c) => L.latLngBounds(c.meta.bounds);
 const loadedCommunes = () => [...communes.values()].filter((c) => c.loaded);
 
@@ -287,6 +316,7 @@ async function syncIndex() {
   renderCommuneList();
   buildAirSliders();
   renderSources();
+  drawUnloadedMask();
   update({ context: true });
   ensureVisibleLoaded();
 }
@@ -366,6 +396,9 @@ function initMap() {
   L.control.scale({ imperial: false }).addTo(map);
 
   // panes : contours d'isochrones et gares au-dessus des surfaces raster
+  const unloaded = map.createPane("unloaded");  // voile hachuré hors des communes téléchargées
+  unloaded.style.zIndex = 405;
+  unloaded.style.pointerEvents = "none";
   map.createPane("zone").style.zIndex = 410;
   map.createPane("iso").style.zIndex = 420;
   const labels = map.createPane("labels");  // noms de communes, au-dessus des zones
