@@ -123,6 +123,15 @@
       <label class="check"><input type="checkbox" id="show-iso" checked> Contour de l'isochrone</label>
     </section>
 
+    <section id="freshness-box" hidden>
+      <h2>Données</h2>
+      <div class="refresh-row">
+        <button type="button" id="refresh-btn" class="btn" disabled>Mettre à jour les données de plus de 6 mois</button>
+        <span class="note" id="refresh-note"></span>
+      </div>
+      <details id="refresh-details" class="note" hidden><summary>Détail par source</summary><ul id="refresh-sources"></ul></details>
+    </section>
+
     <footer id="sources"></footer>
   </aside>
   <div id="resizer" role="separator" aria-orientation="vertical" title="Glisser pour redimensionner le menu (double-clic : largeur par défaut)"></div>

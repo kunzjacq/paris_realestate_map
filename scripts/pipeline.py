@@ -130,13 +130,33 @@ def http_get(url, **kw):
             time.sleep(2 * (attempt + 1))
 
 
+# Mise à jour des données anciennes : pendant une mise à jour (refresh_stale), REFRESH_BEFORE est la date
+# limite ; tout fichier en cache plus ancien est retéléchargé. Le nouveau fichier est écrit à côté puis
+# remplace l'ancien d'un seul coup : aucune donnée n'est effacée avant que la nouvelle soit disponible.
+MAX_AGE_DAYS = 183               # âge au-delà duquel une donnée est proposée à la mise à jour (~6 mois)
+REFRESH_BEFORE = None
+
+
+def is_stale(path):
+    return REFRESH_BEFORE is not None and path.exists() and path.stat().st_mtime < REFRESH_BEFORE
+
+
 def cached(path, fetch):
-    """Renvoie path, en le créant via fetch() (qui renvoie des bytes) s'il manque."""
+    """Renvoie path, en le créant via fetch() (qui renvoie des bytes) s'il manque, ou en le
+    retéléchargeant pendant une mise à jour s'il est trop ancien."""
     with lock_for(str(path)):
-        if not path.exists():
-            tmp = path.with_suffix(path.suffix + ".part")
-            tmp.write_bytes(fetch())
-            tmp.rename(path)
+        refresh = is_stale(path)
+        if not path.exists() or refresh:
+            tmp = path.with_name(path.name + f".{os.getpid()}.part")
+            try:
+                tmp.write_bytes(fetch())
+            except Exception as e:
+                tmp.unlink(missing_ok=True)
+                if not refresh:
+                    raise
+                print(f"mise à jour impossible, ancienne version conservée : {path.name} ({e})", flush=True)
+                return path
+            os.replace(tmp, path)
     return path
 
 
@@ -146,7 +166,7 @@ def idf_communes():
     """Contours de toutes les communes d'Île-de-France (pour la recherche et les requêtes spatiales)."""
     f = RAW / "idf_communes.gpkg"
     with lock_for(str(f)):
-        if not f.exists():
+        if not f.exists() or is_stale(f):
             parts = []
             for dep in IDF_DEPTS:
                 r = http_get(f"{GEO_API}/departements/{dep}/communes",
@@ -155,7 +175,9 @@ def idf_communes():
                 parts.append(gpd.GeoDataFrame.from_features(r.json()["features"], crs=4326))
             g = pd.concat(parts, ignore_index=True)
             g = g[["code", "nom", "codeDepartement", "population", "geometry"]]
-            g.to_file(f, driver="GPKG")
+            tmp = f.with_name(f"idf_communes.{os.getpid()}.part.gpkg")
+            g.to_file(tmp, driver="GPKG")
+            os.replace(tmp, f)
     return gpd.read_file(f)
 
 
@@ -328,11 +350,20 @@ def osm_tile(i, j, log=print):
     return json.loads(cached(d / f"{i}_{j}.json", fetch).read_bytes())
 
 
-def load_osm(bounds_wgs, log):
+def osm_tiles(bounds_wgs):
     w, s, e, n = bounds_wgs
     dlat, dlon = OSM_TILE_DEG
-    tiles = [(i, j) for i in range(int(np.floor(s / dlat)), int(np.floor(n / dlat)) + 1)
-             for j in range(int(np.floor(w / dlon)), int(np.floor(e / dlon)) + 1)]
+    return [(i, j) for i in range(int(np.floor(s / dlat)), int(np.floor(n / dlat)) + 1)
+            for j in range(int(np.floor(w / dlon)), int(np.floor(e / dlon)) + 1)]
+
+
+def osm_bounds(commune_l93):
+    """Emprise du réseau OSM utile à une commune (gares à portée comprises)."""
+    return transform_bounds(2154, 4326, *commune_l93.buffer(STATION_SEARCH_RADIUS_M + 500).bounds)
+
+
+def load_osm(bounds_wgs, log):
+    tiles = osm_tiles(bounds_wgs)
     nodes, ways = {}, {}
     for k, (i, j) in enumerate(tiles):
         log(f"réseau OSM : dalle {k + 1}/{len(tiles)}")
@@ -548,9 +579,9 @@ def bruitparif_gpkg(log):
     """Carte air-bruit 2024 convertie une fois en GeoPackage indexé (lecture par emprise rapide)."""
     gpkg = RAW / "airbruit2024.gpkg"
     with lock_for(str(gpkg)):
-        if not gpkg.exists():
-            z = cached(RAW / "airbruit2024.zip", lambda: http_get(BRUITPARIF_ZIP).content)
-            log("conversion de la carte Bruitparif (une seule fois, ~1 min)")
+        z = cached(RAW / "airbruit2024.zip", lambda: http_get(BRUITPARIF_ZIP).content)
+        if not gpkg.exists() or gpkg.stat().st_mtime < z.stat().st_mtime:
+            log("conversion de la carte Bruitparif (~1 min)")
             src = f"/vsizip/{z}/AirBruit_2024.shp"
             n = pyogrio.read_info(src)["features"]
             tmp = gpkg.with_suffix(".part.gpkg")
@@ -560,7 +591,7 @@ def bruitparif_gpkg(log):
                 g = pyogrio.read_dataframe(src, skip_features=start, max_features=step)
                 g = g.rename(columns={"9": "code"})
                 pyogrio.write_dataframe(g, tmp, layer="airbruit", append=start > 0)
-            tmp.rename(gpkg)
+            os.replace(tmp, gpkg)
     return gpkg
 
 
@@ -599,7 +630,7 @@ def drieat_layer_gpkg(dep, wfs, layer, log):
     short = layer.split(":")[-1]
     gpkg = d / f"{short}.gpkg"
     with lock_for(str(gpkg)):
-        if not gpkg.exists():
+        if not gpkg.exists() or is_stale(gpkg):
             log(f"téléchargement bruit DRIEAT {short}")
             def fetch():
                 # le service renvoie parfois une réponse vide avec un statut 200 : on réessaie
@@ -621,7 +652,9 @@ def drieat_layer_gpkg(dep, wfs, layer, log):
                 lv = pd.to_numeric(g.idzonbruit.str.extract(r"LD(\d\d)")[0], errors="coerce")
             src = "fer" if "_F_" in short else "route"
             out = gpd.GeoDataFrame({"lv": lv.fillna(0).astype(int), "src": src}, geometry=g.geometry, crs=g.crs)
-            out[out.lv > 0].to_file(gpkg, driver="GPKG")
+            tmp = gpkg.with_name(f"{short}.{os.getpid()}.part.gpkg")
+            out[out.lv > 0].to_file(tmp, driver="GPKG")
+            os.replace(tmp, gpkg)
             gml.unlink()
     return gpkg
 
@@ -731,9 +764,7 @@ def build_commune(code, log=print):
 
     # Temps de trajet réels jusqu'à la gare la plus proche, par mode (marche, vélo) et par réseau ;
     # l'application combine les réseaux choisis pour le mode choisi.
-    reseau = commune_l93.buffer(STATION_SEARCH_RADIUS_M + 500)
-    bounds_wgs = transform_bounds(2154, 4326, *reseau.bounds)
-    x, y, graphs = build_graphs(*load_osm(bounds_wgs, lambda m: log(f"{nom} : {m}")))
+    x, y, graphs = build_graphs(*load_osm(osm_bounds(commune_l93), lambda m: log(f"{nom} : {m}")))
     if len(stations):
         layers.update(travel_times(grid, stations, accesses, x, y, graphs, lambda m: log(f"{nom} : {m}")))
     else:
@@ -796,8 +827,11 @@ def build_commune(code, log=print):
     }
     (tmp / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
     compress_dir(tmp)
-    shutil.rmtree(out, ignore_errors=True)
+    old = COMMUNES_DIR / f".{code}.{os.getpid()}.old"
+    if out.exists():
+        out.rename(old)        # l'ancienne version n'est retirée qu'une fois la nouvelle en place
     tmp.rename(out)
+    shutil.rmtree(old, ignore_errors=True)
     update_index()
     log(f"{nom} : terminé")
     return meta
@@ -931,6 +965,140 @@ def zone_stats(codes, q):
                               "bp": float(area[bp].sum()), "route": float(area[route].sum()),
                               "fer": float(area[fer].sum())}}
     return out
+
+
+# --------------------------------------------------------------------------- âge des données et mise à jour
+
+def _global_sources():
+    """Sources communes à toutes les communes : (clé, libellé, fichiers en cache)."""
+    idfm = [RAW / f"idfm_gares_{'_'.join(sorted(NETWORKS)).lower()}.geojson",
+            RAW / "idfm_acces.csv", RAW / "idfm_relations_acces.csv"]
+    return [
+        ("idfm", "Gares, stations et accès (IDFM)", idfm),
+        ("communes", "Contours des communes (geo.api.gouv.fr)", [RAW / "idf_communes.gpkg"]),
+        ("airbruit", "Indice air-bruit (Bruitparif)", [RAW / "airbruit2024.zip"]),
+        ("drieat", "Bruit ferroviaire (DRIEAT)", [RAW / "drieat_index.json"] + sorted((RAW / "drieat").glob("*.gpkg"))),
+    ]
+
+
+_osm_tiles_cache = {}
+
+
+def _commune_files(code):
+    """Fichiers en cache propres à une commune, par source."""
+    if code not in _osm_tiles_cache:
+        geom = gpd.GeoSeries([commune_geom(code).geometry], crs=4326).to_crs(2154).iloc[0]
+        _osm_tiles_cache[code] = osm_tiles(osm_bounds(geom))
+    return {
+        "osm": [RAW / "osm" / f"{i}_{j}.json" for i, j in _osm_tiles_cache[code]],
+        "airparif": [RAW / "airparif" / f"{pol}_{AIR_YEAR}_{code}.tif" for pol in AIR_POLLUTANTS],
+        "bruit_route": sorted((RAW / "bruitparif_route" / code).glob("*.png")),
+        "bruit_fer": sorted((RAW / "bruitparif_fer" / code).glob("*.png")),
+    }
+
+
+COMMUNE_SOURCE_LABELS = {"osm": "Réseau de rues (OpenStreetMap)", "airparif": "Pollution de l'air (Airparif)",
+                         "bruit_route": "Bruit routier (Bruitparif)", "bruit_fer": "Bruit ferroviaire (Bruitparif)"}
+REFRESH_STATE = RAW / "refresh_state.json"  # communes restant à reconstruire d'une mise à jour interrompue
+
+
+def _iso(ts):
+    return time.strftime("%Y-%m-%d", time.localtime(ts)) if ts else None
+
+
+def freshness(max_age_days=MAX_AGE_DAYS):
+    """Âge des données en cache : par source, fichiers de plus de max_age_days, et communes à reconstruire."""
+    cutoff = time.time() - max_age_days * 86400
+    sources, oldest_all = [], None
+
+    def summarize(key, label, files):
+        nonlocal oldest_all
+        mt = [f.stat().st_mtime for f in files if f.exists()]
+        if not mt:
+            return None
+        oldest = min(mt)
+        oldest_all = oldest if oldest_all is None else min(oldest_all, oldest)
+        entry = {"key": key, "label": label, "files": len(mt), "stale": sum(m < cutoff for m in mt), "oldest": _iso(oldest)}
+        sources.append(entry)
+        return entry
+
+    global_stale = False
+    for key, label, files in _global_sources():
+        e = summarize(key, label, files)
+        global_stale |= bool(e and e["stale"])
+
+    idx = WEB_DATA / "index.json"
+    built = json.loads(idx.read_text())["communes"] if idx.exists() else []
+    per_source = {k: set() for k in COMMUNE_SOURCE_LABELS}
+    communes = []
+    pending = set(json.loads(REFRESH_STATE.read_text())["pending"]) if REFRESH_STATE.exists() else set()
+    for c in built:
+        reasons = []
+        try:
+            files = _commune_files(c["code"])
+        except Exception:
+            continue
+        for k, fl in files.items():
+            per_source[k].update(fl)
+            if any(f.exists() and f.stat().st_mtime < cutoff for f in fl):
+                reasons.append(COMMUNE_SOURCE_LABELS[k])
+        if global_stale:
+            reasons.append("données communes à mettre à jour")
+        if c["code"] in pending:
+            reasons.append("mise à jour précédente interrompue")
+        if reasons:
+            communes.append({"code": c["code"], "nom": c["nom"], "reasons": reasons})
+    for k, fl in per_source.items():
+        summarize(k, COMMUNE_SOURCE_LABELS[k], sorted(fl))
+    return {"max_age_days": max_age_days, "cutoff": _iso(cutoff), "oldest": _iso(oldest_all),
+            "sources": sources, "communes": communes,
+            "to_update": bool(communes) or global_stale}
+
+
+def refresh_stale(log=print, on_commune=None, max_age_days=MAX_AGE_DAYS):
+    """Retélécharge les données de plus de max_age_days puis reconstruit les communes concernées.
+    Chaque fichier est remplacé seulement une fois la nouvelle version complète (cached, is_stale) ;
+    chaque commune est reconstruite à côté de l'ancienne version, qui reste servie jusqu'au remplacement."""
+    global REFRESH_BEFORE, _idf_cache
+    report = freshness(max_age_days)
+    if not report["to_update"]:
+        log("aucune donnée à mettre à jour")
+        return {}
+    REFRESH_BEFORE = time.time() - max_age_days * 86400
+    errors = {}
+    try:
+        if any(s["stale"] for s in report["sources"] if s["key"] in ("idfm", "communes", "airbruit", "drieat")):
+            log("mise à jour : gares et accès IDFM")
+            idfm_tables()
+            log("mise à jour : contours des communes")
+            idf_communes()
+            _idf_cache = None
+            log("mise à jour : indice air-bruit Bruitparif")
+            bruitparif_gpkg(log)
+            log("mise à jour : bruit ferroviaire DRIEAT")
+            idx = drieat_index()
+            for dep, entry in idx.items():
+                for layer in entry["layers"]:
+                    if (RAW / "drieat" / f"{layer.split(':')[-1]}.gpkg").exists():
+                        drieat_layer_gpkg(dep, entry["wfs"], layer, log)
+        todo = [c["code"] for c in report["communes"]]
+        REFRESH_STATE.write_text(json.dumps({"pending": todo}))
+        for k, code in enumerate(todo):
+            log(f"mise à jour des communes ({k + 1}/{len(todo)})")
+            try:
+                build_commune(code, log)
+            except Exception as e:  # la commune garde ses anciennes données
+                errors[code] = str(e)
+                continue
+            pending = [c for c in json.loads(REFRESH_STATE.read_text())["pending"] if c != code]
+            REFRESH_STATE.write_text(json.dumps({"pending": pending}))
+            if on_commune:
+                on_commune()
+        if not errors:
+            REFRESH_STATE.unlink(missing_ok=True)
+    finally:
+        REFRESH_BEFORE = None
+    return errors
 
 
 # --------------------------------------------------------------------------- compression

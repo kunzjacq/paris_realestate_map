@@ -875,6 +875,45 @@ function initSearch() {
   });
 }
 
+// ------------------------------------------------------------------ âge des données et mise à jour
+
+const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" }) : "?";
+let refreshRunning = false;
+
+async function loadFreshness() {
+  if (!serverMode) return;
+  let f;
+  try { f = await getJSON("api/freshness"); } catch (e) { return; }
+  $("freshness-box").hidden = false;
+  const btn = $("refresh-btn"), note = $("refresh-note");
+  const stale = f.sources.filter((x) => x.stale);
+  if (refreshRunning) {
+    btn.disabled = true;
+    note.textContent = "Mise à jour en cours (suivi dans la section Communes).";
+  } else if (f.to_update) {
+    btn.disabled = false;
+    note.textContent = `${stale.length} source(s) et ${f.communes.length} commune(s) concernées ; ` +
+      `données les plus anciennes : ${fmtDate(f.oldest)}. Les données actuelles restent utilisées jusqu'à leur remplacement.`;
+  } else {
+    btn.disabled = true;
+    note.textContent = `Rien à mettre à jour : toutes les données ont moins de 6 mois (les plus anciennes datent du ${fmtDate(f.oldest)}).`;
+  }
+  $("refresh-details").hidden = !f.sources.length;
+  $("refresh-sources").innerHTML = f.sources.map((x) =>
+    `<li class="${x.stale ? "stale" : ""}">${x.label} : ${x.files} fichier(s), du ${fmtDate(x.oldest)}` +
+    `${x.stale ? ` — ${x.stale} de plus de 6 mois` : ""}</li>`).join("");
+}
+
+function initRefresh() {
+  $("refresh-btn").addEventListener("click", async () => {
+    $("refresh-btn").disabled = true;
+    await fetch("api/refresh", { method: "POST" });
+    refreshRunning = true;
+    loadFreshness();
+    pollStatus();
+  });
+}
+
 let pollTimer = null;
 async function pollStatus() {
   clearTimeout(pollTimer);
@@ -893,7 +932,9 @@ async function pollStatus() {
   } else if (box.querySelector(".spin")) {
     box.hidden = true;
   }
-  if (lastVersion !== null && s.version !== lastVersion) await syncIndex();
+  const running = (s.current && s.current.code === "__refresh__") || s.pending.includes("__refresh__");
+  if (lastVersion !== null && s.version !== lastVersion) { await syncIndex(); loadFreshness(); }
+  if (running !== refreshRunning) { refreshRunning = running; loadFreshness(); }
   lastVersion = s.version;
   renderCommuneList(s);
   pollTimer = setTimeout(pollStatus, busy ? 1500 : 5000);
@@ -920,6 +961,7 @@ let hoverBox, hoverEvt = null, hoverFrame = 0, hoverStation = null;
 let stationMarkers = new Map();  // zdc -> marqueur
 
 function initHover() {
+  // encadré d'information fixe, dans le coin supérieur droit de la carte (sous le choix du fond de carte)
   hoverBox = L.DomUtil.create("div", "hover-box", map.getContainer());
   hoverBox.hidden = true;
   map.on("mousemove", (e) => {
@@ -1019,11 +1061,6 @@ function renderHover() {
   html += exclusionHtml(c, i, ok);
   hoverBox.innerHTML = html;
   hoverBox.hidden = false;
-  // à droite du curseur, ou à gauche près du bord
-  const size = map.getSize(), p = e.containerPoint;
-  const left = p.x + 16 + hoverBox.offsetWidth > size.x ? p.x - 16 - hoverBox.offsetWidth : p.x + 16;
-  const top = Math.min(p.y + 16, size.y - hoverBox.offsetHeight - 4);
-  hoverBox.style.transform = `translate(${left}px, ${top}px)`;
   showNearStations(e.latlng, sel.st && sel.st.zdc);
   highlightStation(reached ? sel.st.zdc : null);
 }
@@ -1230,7 +1267,7 @@ async function main() {
   } catch (e) { serverMode = false; }
   $("add-box").hidden = !serverMode;
   $("static-note").hidden = serverMode;
-  if (serverMode) initSearch();
+  if (serverMode) { initSearch(); initRefresh(); loadFreshness(); }
   await syncIndex();
   if (serverMode) pollStatus();
 }

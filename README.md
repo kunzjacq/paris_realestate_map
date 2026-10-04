@@ -56,6 +56,8 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
 | `DELETE /api/commune/<code>` | retire une commune (supprime ses données) |
 | `GET /api/status` | état de la file : commune en cours et étape, communes en attente, erreurs, version |
 | `POST /api/stats` | surfaces de la zone retenue par commune (voir ci-dessous) |
+| `GET /api/freshness` | âge des données en cache : par source, fichiers de plus de 6 mois, communes à mettre à jour |
+| `POST /api/refresh` | met en file la mise à jour des données de plus de 6 mois (voir ci-dessous) |
 
 ### File de construction
 
@@ -66,6 +68,27 @@ quand le numéro de version change, elle recharge l'index et affiche les commune
 Avant chaque construction, le serveur vérifie si `scripts/pipeline.py` a été modifié depuis son
 chargement : si oui, il le recharge et remet en file les communes au format de données antérieur. Une
 modification du pipeline ne demande donc pas de redémarrer le serveur ; une modification de `server.py`, si.
+
+### Âge des données et mise à jour
+
+Chaque fichier téléchargé (`data/raw/`) est daté de son téléchargement. `GET /api/freshness` les regroupe par
+source : gares et accès IDFM, contours des communes, indice air-bruit, bruit DRIEAT (communs à toutes les
+communes), réseau OSM, pollution Airparif, bruit routier et ferroviaire Bruitparif (propres à chaque commune).
+Une commune est à mettre à jour si l'une de ses données a plus de 6 mois (`MAX_AGE_DAYS` dans `pipeline.py`),
+si une donnée commune a plus de 6 mois, ou si une mise à jour précédente a été interrompue avant elle.
+
+Dans l'application, la section « Données » (bas du menu) affiche le bouton « Mettre à jour les données de plus
+de 6 mois », grisé avec une explication quand rien n'est à mettre à jour, et le détail par source.
+La mise à jour (`POST /api/refresh`) passe par la file de construction :
+
+1. chaque fichier de plus de 6 mois est retéléchargé dans un fichier temporaire, qui ne remplace l'ancien
+   qu'une fois complet ; si le téléchargement échoue, l'ancien fichier est conservé ;
+2. les conversions dérivées (carte air-bruit, couches DRIEAT) sont refaites de la même façon ;
+3. les communes concernées sont reconstruites une à une à côté de leur version actuelle, qui reste servie
+   jusqu'au remplacement. La liste des communes restant à faire est gardée dans `data/raw/refresh_state.json`
+   pour reprendre une mise à jour interrompue.
+
+Aucune donnée n'est donc effacée avant que sa nouvelle version soit disponible.
 
 ### Surfaces calculées par le serveur
 

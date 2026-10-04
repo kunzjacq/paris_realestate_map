@@ -159,10 +159,10 @@ body.panel-hidden #panel, body.panel-hidden #resizer { display: none; }
 }
 
 .hover-box {
-  position: absolute; left: 0; top: 0; z-index: 1000; pointer-events: none;
+  position: absolute; top: 62px; right: 10px; z-index: 1000; pointer-events: none;
   background: rgba(255,255,255,.96); border: 1px solid var(--line); border-radius: 6px;
-  box-shadow: 0 4px 14px rgba(0,0,0,.15); padding: 6px 9px; font-size: 12.5px; line-height: 1.4;
-  max-width: 260px; white-space: normal;
+  box-shadow: 0 4px 14px rgba(0,0,0,.15); padding: 8px 10px; font-size: 12.5px; line-height: 1.4;
+  width: 270px; max-width: calc(100% - 20px); white-space: normal;
 }
 .hover-box .muted { color: var(--muted); }
 .hover-box .ko { color: #b42318; font-weight: 600; }
@@ -199,3 +199,13 @@ body.panel-hidden #panel, body.panel-hidden #resizer { display: none; }
   text-shadow: 0 0 2px #fff, 0 0 3px #fff, 0 0 5px #fff, 0 0 8px rgba(255,255,255,.9);
 }
 .labels-off .commune-label { display: none; }
+
+/* pointeur en croix sur la carte (main de Leaflet seulement pendant le glissement) */
+#map.leaflet-grab, #map .leaflet-grab { cursor: crosshair; }
+.leaflet-dragging #map.leaflet-grab, .leaflet-dragging #map .leaflet-grab { cursor: grabbing; }
+
+.refresh-row { display: flex; flex-direction: column; gap: 6px; }
+.refresh-row .btn:disabled { background: var(--bg); color: var(--muted); border-color: var(--line); }
+#refresh-details { margin-top: 6px; }
+#refresh-details ul { margin: 4px 0 0; padding-left: 16px; }
+#refresh-details .stale { color: #b54708; }

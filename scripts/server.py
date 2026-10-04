@@ -11,6 +11,8 @@ API (JSON) :
                                         surfaces de la zone retenue par commune (calcul côté serveur,
                                         pour ne pas charger dans le navigateur les communes hors écran)
   DELETE /api/commune/<code>            retire une commune
+  GET    /api/freshness[?days=N]        âge des données en cache : sources et communes de plus de 6 mois
+  POST   /api/refresh                   met en file la mise à jour des données de plus de 6 mois
   GET    /api/status                    état de la file (le front le sonde pendant les constructions)
 """
 
@@ -90,14 +92,19 @@ class Jobs:
                 if code in self.pending:
                     self.pending.remove(code)
                 self.current = {"code": code, "nom": code, "step": "démarrage"}
+            def log(msg):
+                print(msg, flush=True)
+                with self.lock:
+                    self.current["step"] = msg
             try:
-                self.current["nom"] = pipeline.commune_geom(code).nom
-
-                def log(msg):
-                    print(msg, flush=True)
+                if code == REFRESH:
+                    self.current["nom"] = "Mise à jour des données"
+                    errors = pipeline.refresh_stale(log, on_commune=self.bump)
                     with self.lock:
-                        self.current["step"] = msg
-                pipeline.build_commune(code, log)
+                        self.errors.update(errors)
+                else:
+                    self.current["nom"] = pipeline.commune_geom(code).nom
+                    pipeline.build_commune(code, log)
             except Exception as e:  # erreur rapportée au front, le serveur continue
                 traceback.print_exc()
                 with self.lock:
@@ -106,6 +113,8 @@ class Jobs:
                 self.current = None
                 self.version += 1
 
+
+REFRESH = "__refresh__"  # tâche de mise à jour des données anciennes, dans la même file
 
 JOBS = Jobs()
 
@@ -170,6 +179,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(pipeline.search_communes(q.get("q", "")))
             if u.path == "/api/at":
                 return self._json(pipeline.communes_at(float(q["lon"]), float(q["lat"])))
+            if u.path == "/api/freshness":
+                return self._json(pipeline.freshness(int(q.get("days", pipeline.MAX_AGE_DAYS))))
             if u.path == "/api/bbox":
                 hits = pipeline.communes_in_bbox(float(q["w"]), float(q["s"]), float(q["e"]), float(q["n"]))
                 return self._json({"communes": hits[:MAX_BBOX_COMMUNES], "total": len(hits),
@@ -189,6 +200,8 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 traceback.print_exc()
                 return self._json({"error": str(e)}, 500)
+        if path == "/api/refresh":
+            return self._json({"added": JOBS.add([REFRESH])})
         if path != "/api/build":
             return self._json({"error": "inconnu"}, 404)
         codes = body.get("codes", [])
