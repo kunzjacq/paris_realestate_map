@@ -455,22 +455,27 @@ function geoRings(geom) {
   return polys.flatMap((poly) => poly.map((ring) => ring.slice(0, -1).map(([lon, lat]) => L.latLng(lat, lon))));
 }
 
+// rendu « projecteur » : hors zone assombri, zone retenue claire et cernée d'un trait souligné de blanc.
+// Avec une couche de contexte, la zone n'est pas teintée (ses couleurs restent lisibles) et le trait
+// est noir, couleur absente des légendes (le vert se confondait avec les zones calmes du bruit).
+const ZONE_STYLE = {
+  plain:   { dim: 0.5, fill: "#2ecc71", fillOpacity: 0.18, line: "#0b6b45" },
+  context: { dim: 0.3, fill: null, fillOpacity: 0, line: "#111" },
+};
+
 function drawZone(c, res) {
   c.zone.clearLayers();
   if (!isActive(c.code) || !state.showZone) return;
   const rings = smoothContours(res.match, c.meta);
-  const dim = state.context === "none" ? 0.27 : 0.14;
+  const st = ZONE_STYLE[state.context === "none" ? "plain" : "context"];
+  const base = { pane: "zone", renderer: zoneRenderer, interactive: false, fillRule: "evenodd" };
   // voile sur la commune hors zone retenue : contour de la commune + contours de zone (règle pair-impair)
-  c.zone.addLayer(L.polygon([...c.outlineRings, ...rings], {
-    pane: "zone", renderer: zoneRenderer, stroke: false, fillColor: "#28282d", fillOpacity: dim,
-    fillRule: "evenodd", interactive: false,
-  }));
-  if (rings.length) {
-    c.zone.addLayer(L.polygon(rings, {
-      pane: "zone", renderer: zoneRenderer, color: "#0c5037", weight: 2, fillColor: "#1a7f5a", fillOpacity: 0.45,
-      fillRule: "evenodd", interactive: false,
-    }));
-  }
+  c.zone.addLayer(L.polygon([...c.outlineRings, ...rings],
+    { ...base, stroke: false, fillColor: "#1b1b20", fillOpacity: st.dim }));
+  if (!rings.length) return;
+  if (st.fill) c.zone.addLayer(L.polygon(rings, { ...base, stroke: false, fillColor: st.fill, fillOpacity: st.fillOpacity }));
+  c.zone.addLayer(L.polygon(rings, { ...base, fill: false, color: "#fff", weight: 5, opacity: 0.9 }));  // liseré
+  c.zone.addLayer(L.polygon(rings, { ...base, fill: false, color: st.line, weight: 2.5 }));
 }
 
 // temps (s) -> tranche de la légende (5, 10, 15, 20 min), 0 au-delà
