@@ -90,7 +90,7 @@ DRIEAT_SEARCH = "Lot de données relatives aux cartes de bruit stratégiques"
 # servie en images par le MapProxy de Bruitparif : on retrouve la classe Lden de chaque pixel par sa couleur.
 BRUITPARIF_WMS = "https://raster.bruitparif.fr/mapproxy/service"
 BRUITPARIF_LAYERS = {"route": "CSB4_w4echConso_Route_A_Lden", "fer": "CSB4_w4echConso_Fer_A_Lden"}
-BRUITPARIF_LEGEND = {  # légende commune aux deux couches  # borne basse de la classe Lden (40 = moins de 45 dB) -> couleur de la légende
+BRUITPARIF_LEGEND = {  # légende commune aux deux couches : borne basse de la classe Lden (40 = moins de 45 dB) -> couleur
     40: (75, 199, 0), 45: (83, 253, 0), 50: (183, 253, 114), 55: (252, 253, 0),
     60: (253, 169, 0), 65: (253, 0, 0), 70: (211, 0, 252), 75: (149, 0, 100),
 }

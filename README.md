@@ -1,8 +1,8 @@
 # immo_map
 
-Carte interactive des zones situées à moins de N minutes à pied ou à vélo d'une gare RER ou Transilien ou d'une station
-de métro, sous des seuils
-de pollution de l'air et de bruit, pour n'importe quelle commune d'Île-de-France.
+Carte interactive des zones situées à moins de N minutes à pied ou à vélo d'une gare RER, Transilien ou d'une
+station de métro, sous des seuils de pollution de l'air et de bruit, pour n'importe quelle commune
+d'Île-de-France.
 
 ## Lancer l'application
 
@@ -18,6 +18,39 @@ de pollution de l'air et de bruit, pour n'importe quelle commune d'Île-de-Franc
 
 Une nouvelle commune prend de quelques secondes (données déjà en cache) à quelques minutes (dalles OSM et
 cartes à télécharger), puis s'affiche d'elle-même.
+
+## Utilisation de l'application
+
+### Menu (à gauche)
+
+Le menu s'élargit ou se rétrécit en glissant son bord droit (double-clic : largeur par défaut) ; le bouton
+« « » le masque entièrement, « ☰ Menu » sur la carte le rouvre. Ses réglages sont conservés d'une visite à
+l'autre (navigateur), comme la dernière vue de la carte.
+
+| Rubrique | Contenu |
+|---|---|
+| Communes | liste repliable (clic sur le titre) : case pour inclure ou non la commune, centrage, retrait ; recherche, « Ajouter les communes visibles », suivi des constructions. « ⚠ route » / « ⚠ fer » : bruit connu sur moins de 90 % de la commune |
+| Trajet jusqu'à une gare | filtre activable, à pied ou à vélo, réseaux RER / Transilien / Métro, seuil de 3 à 20 min (pas de 1 min) |
+| Pollution de l'air | un curseur par polluant (NO₂, PM2.5, PM10, moyennes annuelles), repères OMS et UE 2030 |
+| Bruit des transports | Lden routier et ferroviaire maximal (de < 75 à < 45 dB), indice global Bruitparif (3 niveaux) |
+| Affichage | couche de contexte (temps de trajet, polluants, bruits), zone retenue, contour de la zone atteignable |
+| Données | âge des données et bouton de mise à jour de celles de plus de 6 mois (voir « Serveur ») |
+| Zone retenue | repliable : surface retenue totale et par commune, part de la surface respectant chaque critère seul |
+
+### Carte
+
+- **Zone retenue** (tous les critères respectés) : claire, teintée de vert, cernée d'un trait ; le reste des
+  communes téléchargées est assombri. Avec une couche de contexte, la zone n'est pas teintée et son trait est noir.
+- **Communes non téléchargées** : voile gris hachuré. Un clic dessus propose « Ajouter cette commune ».
+- **Contour pointillé bleu** : zone atteignable dans le temps choisi (temps de trajet seul).
+- **Gares** : seules les 3 plus proches de la souris sont affichées, avec leurs accès et leur nom (rose : RER,
+  bleu : Transilien, jaune : métro) ; la gare retenue pour le point survolé est agrandie.
+- **Encadré en haut à droite** (point sous la souris, pointeur en croix) : gare la plus rapide à atteindre,
+  temps à pied et à vélo (arrondis à la minute), bruit routier, ferroviaire et indice global, NO₂ / PM2.5 /
+  PM10 (pastille verte sous la recommandation OMS, jaune jusqu'à la valeur limite UE 2030, rouge au-delà),
+  et la liste des raisons d'exclusion quand le point est hors de la zone retenue.
+- **Noms des communes** téléchargées, dessinés au-dessus des zones à partir du zoom 12.
+- Les contours sont lissés et simplifiés selon le zoom (moins de détail en vue large).
 
 ## Serveur
 
@@ -96,8 +129,8 @@ Aucune donnée n'est donc effacée avant que sa nouvelle version soit disponible
 
 Le navigateur ne charge les données détaillées d'une commune que lorsqu'elle est visible à l'écran (avec une
 marge de 15 %), quatre communes à la fois au plus, les plus proches du centre de la vue d'abord ; un
-chargement qui échoue est réessayé quelques secondes plus tard ; au démarrage, il ne reçoit que le résumé (`meta.json`) et le contour de chaque commune, et la
-carte rouvre sur la dernière vue utilisée. Le bloc « Zone retenue » additionne pourtant toutes les communes
+chargement qui échoue est réessayé quelques secondes plus tard. Au démarrage, il ne reçoit que le résumé
+(`meta.json`) et le contour de chaque commune, et la carte rouvre sur la dernière vue utilisée. Le bloc « Zone retenue » additionne pourtant toutes les communes
 actives : il est calculé par le serveur, avec les mêmes règles que l'application.
 
 ```json
@@ -162,6 +195,10 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
 - Temps de trajet : calculés localement (scipy) sur le réseau OSM, à vitesse constante : ni feux, ni dénivelé,
   ni temps pour garer le vélo. Vitesses réglables en tête de `scripts/pipeline.py` (`WALK_SPEED_KMH`,
   `BIKE_SPEED_KMH`, `BIKE_SLOW_KMH`). Les seuils comparent le temps arrondi à la minute, comme l'affichage.
+- Overpass (téléchargement du réseau OSM) limite le nombre de requêtes par adresse IP : avant chaque requête,
+  le pipeline consulte la page d'état du serveur et attend le créneau libre ; les miroirs ne servent qu'en
+  dernier recours. Une dalle de Paris peut peser 20 Mo. Une fois les dalles en cache, une commune voisine
+  ne demande plus rien à Overpass.
 - En WCS 2.0, le GeoServer d'Airparif échoue sur certaines emprises. Le pipeline utilise donc
   WCS 1.0 et vérifie qu'il reçoit bien un GeoTIFF.
 
@@ -171,24 +208,23 @@ Le dépôt ne contient que le code. Les données sont hors dépôt (`.gitignore`
 
 | Dossier | Contenu | Taille |
 |---|---|---|
-| `web/data/` | communes construites, index, gares | ~150 Mo (+ ~30 Mo de `.gz`) |
-| `data/raw/` | téléchargements en cache : dalles OSM, rasters Airparif, cartes de bruit, gares IDFM… | ~1,6 Go |
+| `web/data/` | communes construites, index, gares (couches en `.bin` et regroupées dans `layers.pack`, plus les `.gz`) | ~15 Mo par commune (2,1 Go pour 142 communes) |
+| `data/raw/` | téléchargements en cache : dalles OSM, rasters Airparif, cartes de bruit, gares IDFM… | ~3 Go pour 142 communes |
 
 Tout se régénère avec les scripts, mais certaines sources sont lentes ou parfois indisponibles (Overpass,
 Airparif). `scripts/data_archive.py` sauvegarde ces données dans une archive `.tar.gz` et les restaure ;
 il n'utilise que la bibliothèque standard (Python ≥ 3.12) et ne demande pas d'environnement virtuel.
 
 ```sh
-python3 scripts/data_archive.py save                     # web/data + data/raw (~225 Mo)
-python3 scripts/data_archive.py save --no-cache          # web/data seulement (~30 Mo, suffit pour l'appli)
+python3 scripts/data_archive.py save                     # web/data + data/raw (~500 Mo pour 142 communes)
+python3 scripts/data_archive.py save --no-cache          # web/data seulement (suffit pour l'appli)
 python3 scripts/data_archive.py save mes-donnees.tar.gz  # nom d'archive choisi
 python3 scripts/data_archive.py restore immo_map-data-AAAAMMJJ.tar.gz
 ```
 
 **`save`** crée par défaut `immo_map-data-AAAAMMJJ.tar.gz` à la racine du projet (ignoré par git). Sont omis
 les fichiers recalculables : les versions compressées `.gz` et les paquets `layers.pack` de `web/data/`
-(recréés au démarrage du serveur)
-et `data/raw/airbruit2024.gpkg` (conversion de `airbruit2024.zip`, refaite à la demande). Avec `--no-cache`,
+(recréés au démarrage du serveur) et `data/raw/airbruit2024.gpkg` (conversion de `airbruit2024.zip`, refaite à la demande). Avec `--no-cache`,
 seul `web/data/` est archivé : l'application fonctionne, mais ajouter ou reconstruire une commune
 retéléchargera ses données.
 
