@@ -50,7 +50,8 @@ l'autre (navigateur), comme la dernière vue de la carte.
 - **Gares** : seules les 3 plus proches de la souris sont affichées, avec leurs accès et leur nom (rose : RER,
   bleu : Transilien, jaune : métro, vert : Grand Paris Express, violet : tramway ; année d'ouverture des lignes
   en projet) ; la
-  gare retenue pour le point survolé est agrandie.
+  gare retenue pour le point survolé est agrandie. Les gares au même endroit (correspondance, arrêt de tram
+  accolé, gare en projet à moins de 300 m d'une gare existante) partagent une étiquette, une ligne par gare.
 - **Encadré en bas à droite** (point sous la souris, pointeur en croix) : gare la plus rapide à atteindre,
   temps à pied et à vélo (arrondis à la minute), bruit routier, ferroviaire et indice global, NO₂ / PM2.5 /
   PM10 (pastille verte sous la recommandation OMS, jaune jusqu'à la valeur limite UE 2030, rouge au-delà),

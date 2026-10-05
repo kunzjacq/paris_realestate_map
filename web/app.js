@@ -24,7 +24,11 @@ const NO_STATION = 65535;  // indice de gare d'une cellule sans gare atteignable
 // couleur d'une gare : RER, sinon Transilien, sinon métro, sinon Grand Paris Express (réseaux « gpeAAAAMMJJ »),
 // sinon tramway (« tram3a », « tram1_AAAAMMJJ »)
 const stationColor = (nets) => NETWORK_COLORS[["rer", "transilien", "metro", "gpe", "tram"].find((n) => nets.includes(n)) || "rer"];
-const NEAR_STATIONS = 3;  // gares affichées : les plus proches de la souris
+const NEAR_STATIONS = 3;  // lieux affichés : les plus proches de la souris
+// gares plus proches que cela (correspondance, arrêt de tram accolé) : une seule étiquette ; une gare en projet
+// est souvent placée un peu à l'écart de la gare existante (Issy RER à 236 m de Issy) : seuil plus large
+const SAME_PLACE_M = 150, SAME_PLACE_PROJECT_M = 300;
+const isProject = (l) => /^gpe|_\d{8}/.test(l.feature.properties.networks || "");
 const DATA_FORMAT = 12;  // doit suivre DATA_FORMAT de scripts/pipeline.py
 const MODE_LABELS = { walk: "À pied", bike: "À vélo" };
 const UNREACHED = 65535;  // temps (s) d'une cellule hors d'atteinte
@@ -463,9 +467,14 @@ function restoreView() {
 // des centaines de gares et des milliers d'accès surchargeaient la carte. La gare retenue dans la bulle
 // de survol (la plus rapide à atteindre) en fait toujours partie.
 let nearKey = "";
+// gares les plus proches de la souris, regroupées par lieu : une gare en projet ou un arrêt de tram accolé à
+// une gare existante (Fort d'Issy-Vanves-Clamart à 79 m de Clamart) partage son étiquette, sans quoi les deux
+// étiquettes se recouvrent
+const stationText = (l) => `${l.feature.properties.nom} · ${l.feature.properties.lignes}`;
+
 function showNearStations(latlng, preferred = null) {
   const nets = selectedNetworks();
-  let chosen = [];
+  let places = [];  // [[gare principale, gares au même endroit…]]
   if (latlng) {
     const k = Math.cos((latlng.lat * Math.PI) / 180);
     const cand = [];
@@ -473,26 +482,33 @@ function showNearStations(latlng, preferred = null) {
       const n = (l.feature.properties.networks || "rer").split(",");
       if (!n.some((x) => nets.includes(x))) return;
       const p = l.getLatLng(), dx = (p.lng - latlng.lng) * k, dy = p.lat - latlng.lat;
-      cand.push([dx * dx + dy * dy, l]);
+      // gare retenue pour le point survolé : toujours affichée
+      cand.push([l.feature.properties.zdc === preferred ? -1 : dx * dx + dy * dy, l]);
     });
     cand.sort((a, b) => a[0] - b[0]);
-    chosen = cand.slice(0, NEAR_STATIONS).map((x) => x[1]);
-    const pref = preferred && stationMarkers.get(preferred);
-    if (pref && !chosen.includes(pref)) {
-      if (chosen.length < NEAR_STATIONS) chosen.push(pref); else chosen[NEAR_STATIONS - 1] = pref;
+    for (const [, l] of cand) {
+      const place = places.find((pl) => map.distance(pl[0].getLatLng(), l.getLatLng())
+        < (isProject(pl[0]) || isProject(l) ? SAME_PLACE_PROJECT_M : SAME_PLACE_M));
+      if (place) place.push(l);
+      else if (places.length < NEAR_STATIONS) places.push([l]);
     }
   }
-  const key = chosen.map((l) => l.feature.properties.zdc).join("|");
+  const key = places.map((pl) => pl.map((l) => l.feature.properties.zdc).join("+")).join("|");
   if (key === nearKey) return;
   nearKey = key;
   nearLayer.clearLayers();
-  for (const l of chosen) {
-    for (const a of accesByZdc.get(l.feature.properties.zdc) || []) nearLayer.addLayer(a);
+  for (const pl of places) {
+    const [lead, ...others] = pl;
     // étiquette du côté opposé à la souris, pour limiter les chevauchements entre gares proches
-    const tt = l.getTooltip(), west = l.getLatLng().lng < latlng.lng;
+    const tt = lead.getTooltip(), west = lead.getLatLng().lng < latlng.lng;
     tt.options.direction = west ? "left" : "right";
     tt.options.offset = west ? [-8, 0] : [8, 0];
-    nearLayer.addLayer(l);  // étiquette permanente ouverte à l'ajout
+    lead.setTooltipContent(pl.map(stationText).join("<br>"));
+    for (const l of pl) {
+      for (const a of accesByZdc.get(l.feature.properties.zdc) || []) nearLayer.addLayer(a);
+    }
+    for (const l of others) { nearLayer.addLayer(l); l.closeTooltip(); }
+    nearLayer.addLayer(lead);  // étiquette permanente ouverte à l'ajout, au-dessus des autres marqueurs
   }
 }
 
@@ -566,7 +582,7 @@ function initMap() {
   stationsLayer = L.geoJSON(null, {
     pointToLayer: (f, ll) => L.circleMarker(ll, { pane: "stations", renderer: pointRenderer, radius: 6, color: "#fff", weight: 2,
       fillColor: stationColor(f.properties.networks || "rer"), fillOpacity: 1 }),
-    onEachFeature: (f, l) => l.bindTooltip(`${f.properties.nom} · ${f.properties.lignes}`,
+    onEachFeature: (f, l) => l.bindTooltip(stationText(l),
       { permanent: true, direction: "right", offset: [8, 0], className: "station-label" }),
   });
   nearLayer = L.layerGroup().addTo(map);
