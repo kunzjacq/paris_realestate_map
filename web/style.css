@@ -206,6 +206,7 @@ body.panel-hidden #panel, body.panel-hidden #resizer { display: none; }
   text-shadow: 0 0 2px #fff, 0 0 3px #fff, 0 0 5px #fff;
 }
 .quartier-labels-off .quartier-label { display: none; }
+.quartiers-off .leaflet-quartiers-pane, .quartiers-off .quartier-label { display: none; }  /* limites et surbrillance */
 .hover-box .place { color: var(--muted); margin-bottom: 3px; padding-bottom: 3px; border-bottom: 1px solid var(--line); }
 .hover-box .place strong { color: var(--ink); }
 

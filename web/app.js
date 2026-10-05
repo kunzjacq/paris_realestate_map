@@ -178,7 +178,7 @@ function showLoading(n) {
 // ------------------------------------------------------------------ noms des communes
 // Les noms du fond de carte sont sous le voile et les contours de zone : on dessine les nôtres au-dessus.
 
-const LABEL_MIN_ZOOM = 12;  // en dessous, noms masqués (vue d'ensemble trop chargée)
+const LABEL_MIN_ZOOM = 13;  // en dessous, noms masqués (vue d'ensemble trop chargée)
 const LIMIT_WEIGHT = 2;  // épaisseur des limites de communes (trait plein) et de quartiers (pointillés)
 
 function communeLabel(nom, geo) {
@@ -189,9 +189,10 @@ function communeLabel(nom, geo) {
 }
 
 // ------------------------------------------------------------------ quartiers
-// contours fins en pointillés et noms (à partir de QUARTIER_LABEL_MIN_ZOOM), sous l'isochrone
+// limites en pointillés (à partir de QUARTIER_MIN_ZOOM) et noms (à partir de QUARTIER_LABEL_MIN_ZOOM), sous
+// l'isochrone ; en vue plus large, trop de quartiers à l'écran
 
-const QUARTIER_LABEL_MIN_ZOOM = 14;
+const QUARTIER_MIN_ZOOM = 13, QUARTIER_LABEL_MIN_ZOOM = 15;
 
 // limites tracées depuis quartiers_limites.geojson (chaque bord une seule fois : tracés deux fois, les
 // pointillés se bouchent) ; à défaut (données pas encore complétées), contours des quartiers
@@ -526,6 +527,7 @@ function initMap() {
   const labelsByZoom = () => {
     map.getContainer().classList.toggle("labels-off", map.getZoom() < LABEL_MIN_ZOOM);
     map.getContainer().classList.toggle("quartier-labels-off", map.getZoom() < QUARTIER_LABEL_MIN_ZOOM);
+    map.getContainer().classList.toggle("quartiers-off", map.getZoom() < QUARTIER_MIN_ZOOM);
   };
   map.on("zoomend", labelsByZoom);
   labelsByZoom();

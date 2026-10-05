@@ -44,15 +44,15 @@ l'autre (navigateur), comme la dernière vue de la carte.
   communes téléchargées est assombri. Avec une couche de contexte, la zone n'est pas teintée et son trait est noir.
 - **Communes non téléchargées** : voile gris hachuré. Un clic dessus propose « Ajouter cette commune ».
 - **Contour pointillé bleu** : zone atteignable dans le temps choisi (temps de trajet seul).
-- **Quartiers** (option « Quartiers » d'« Affichage ») : limites en pointillés gris, de la même épaisseur que celles des communes ; noms en italique à
-  partir du zoom 14 ; le quartier sous la souris est éclairci et cerné d'un trait plein ; l'encadré de survol indique la commune et le quartier du point.
+- **Quartiers** (option « Quartiers » d'« Affichage ») : limites en pointillés gris, de la même épaisseur que celles des communes, à partir du zoom 13 ;
+  noms en italique à partir du zoom 15 ; le quartier sous la souris est éclairci et cerné d'un trait plein ; l'encadré de survol indique la commune et le quartier du point.
 - **Gares** : seules les 3 plus proches de la souris sont affichées, avec leurs accès et leur nom (rose : RER,
   bleu : Transilien, jaune : métro) ; la gare retenue pour le point survolé est agrandie.
 - **Encadré en bas à droite** (point sous la souris, pointeur en croix) : gare la plus rapide à atteindre,
   temps à pied et à vélo (arrondis à la minute), bruit routier, ferroviaire et indice global, NO₂ / PM2.5 /
   PM10 (pastille verte sous la recommandation OMS, jaune jusqu'à la valeur limite UE 2030, rouge au-delà),
   et la liste des raisons d'exclusion quand le point est hors de la zone retenue.
-- **Noms des communes** téléchargées, dessinés au-dessus des zones à partir du zoom 12.
+- **Noms des communes** téléchargées, dessinés au-dessus des zones à partir du zoom 13.
 - Les contours sont lissés et simplifiés selon le zoom (moins de détail en vue large).
 
 ## Serveur
