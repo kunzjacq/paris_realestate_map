@@ -10,4 +10,5 @@ __pycache__/
 
 # archives de données
 immo_map-data-*.tar.gz
+immo_map-data-*.tar.xz
 immo_map-donnees-*.tar.gz

@@ -239,19 +239,24 @@ Airparif). `scripts/data_archive.py` sauvegarde ces données dans une archive `.
 il n'utilise que la bibliothèque standard (Python ≥ 3.12) et ne demande pas d'environnement virtuel.
 
 ```sh
-python3 scripts/data_archive.py save                     # web/data + data/raw (~500 Mo pour 142 communes)
+python3 scripts/data_archive.py save                     # web/data + data/raw (gzip, ~580 Mo pour 177 communes)
+python3 scripts/data_archive.py save --xz                # idem en xz (~445 Mo, ~30 s avec la commande xz)
 python3 scripts/data_archive.py save --no-cache          # web/data seulement (suffit pour l'appli)
-python3 scripts/data_archive.py save mes-donnees.tar.gz  # nom d'archive choisi
-python3 scripts/data_archive.py restore immo_map-data-AAAAMMJJ.tar.gz
+python3 scripts/data_archive.py save mes-donnees.tar.xz  # nom d'archive choisi (.xz : compression xz)
+python3 scripts/data_archive.py restore immo_map-data-AAAAMMJJ.tar.xz
 ```
 
-**`save`** crée par défaut `immo_map-data-AAAAMMJJ.tar.gz` à la racine du projet (ignoré par git). Sont omis
+**`save`** crée par défaut `immo_map-data-AAAAMMJJ.tar.gz` à la racine du projet (ignoré par git).
+Avec `--xz` (ou un nom finissant par `.xz`), l'archive est compressée en xz : ~25 % plus petite, créée en
+une trentaine de secondes si la commande `xz` est installée (tous les cœurs), sinon en ~7 min par le module
+`lzma` de Python (un seul cœur). Sont omis
 les fichiers recalculables : les versions compressées `.gz` et les paquets `layers.pack` de `web/data/`
 (recréés au démarrage du serveur) et `data/raw/airbruit2024.gpkg` (conversion de `airbruit2024.zip`, refaite à la demande). Avec `--no-cache`,
 seul `web/data/` est archivé : l'application fonctionne, mais ajouter ou reconstruire une commune
 retéléchargera ses données.
 
-**`restore`** extrait l'archive à la racine du projet ; il refuse une archive contenant des chemins hors de
+**`restore`** reconnaît la compression (gzip, xz, bzip2 ou aucune) d'après le contenu du fichier, quel
+que soit son nom, et extrait l'archive à la racine du projet ; il refuse une archive contenant des chemins hors de
 `web/data/` et `data/raw/`. Les fichiers existants de même nom sont remplacés, les autres conservés.
 Ensuite, `./run.sh` recrée les versions compressées et reconstruit les éventuelles communes d'un format
 antérieur.
