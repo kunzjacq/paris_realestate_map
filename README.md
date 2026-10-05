@@ -199,10 +199,13 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
 - Temps de trajet : calculés localement (scipy) sur le réseau OSM, à vitesse constante : ni feux, ni dénivelé,
   ni temps pour garer le vélo. Vitesses réglables en tête de `scripts/pipeline.py` (`WALK_SPEED_KMH`,
   `BIKE_SPEED_KMH`, `BIKE_SLOW_KMH`). Les seuils comparent le temps arrondi à la minute, comme l'affichage.
-- Overpass (téléchargement du réseau OSM) limite le nombre de requêtes par adresse IP : avant chaque requête,
-  le pipeline consulte la page d'état du serveur et attend le créneau libre ; les miroirs ne servent qu'en
-  dernier recours. Une dalle de Paris peut peser 20 Mo. Une fois les dalles en cache, une commune voisine
-  ne demande plus rien à Overpass.
+- Overpass (téléchargement du réseau OSM) limite le nombre de requêtes par adresse IP. Le pipeline essaie en
+  alternance les deux machines d'overpass-api.de (lambert, puis gall via `lz4.overpass-api.de`), qui ont
+  chacune leur quota : avant chaque requête, il consulte leur page d'état et attend le créneau libre. Les
+  miroirs (`OVERPASS_MIRRORS`) ne servent qu'en dernier recours, et seulement si leur page d'état répond en
+  moins de 10 s. Une réponse tronquée (délai ou mémoire dépassés côté serveur, signalés par `remark` malgré
+  un HTTP 200) ou sans aucune voie n'est jamais mise en cache. Une dalle de Paris peut peser 34 Mo. Une fois
+  les dalles en cache, une commune voisine ne demande plus rien à Overpass.
 - En WCS 2.0, le GeoServer d'Airparif échoue sur certaines emprises. Le pipeline utilise donc
   WCS 1.0 et vérifie qu'il reçoit bien un GeoTIFF.
 - Quartiers : endpoint interne et non documenté de Linternaute, qui peut changer ; licence de réutilisation

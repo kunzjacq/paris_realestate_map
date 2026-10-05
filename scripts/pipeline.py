@@ -81,9 +81,11 @@ GEO_API = "https://geo.api.gouv.fr"
 AIRPARIF_WCS = "https://namek.airparif.fr/geoserver/ows"
 LINTERNAUTE_MAP = "https://www.linternaute.com/od/map"  # contours des quartiers (données Yanport)
 IDFM_API = "https://data.iledefrance-mobilites.fr/api/explore/v2.1/catalog/datasets"
-OVERPASS = ["https://overpass-api.de/api/interpreter",  # serveurs essayés à tour de rôle
-            "https://overpass.private.coffee/api/interpreter",
-            "https://maps.mail.ru/osm/tools/overpass/api/interpreter"]
+# Overpass : les deux machines d'overpass-api.de (lambert, puis gall via lz4.), chacune avec son propre quota
+# de créneaux par IP, essayées en alternance ; miroirs en dernier recours, seulement s'ils répondent
+OVERPASS = ["https://overpass-api.de/api/interpreter", "https://lz4.overpass-api.de/api/interpreter"]
+OVERPASS_MIRRORS = ["https://overpass.private.coffee/api/interpreter",
+                    "https://maps.mail.ru/osm/tools/overpass/api/interpreter"]
 BRUITPARIF_ZIP = ("https://www.bruitparif.fr/pages/En-tete/800%20Le%20bruit%20en%20%C3%8Ele-de-France/"
                   "300%20carto-air-bruit-en-idf/600%20Opendata%20air-bruit/"
                   "Couches%20SIG%20air-bruit%202024_9_classes.zip")
@@ -365,6 +367,14 @@ def stations_near(commune_l93):
 # Les temps de trajet sont calculés localement sur le réseau OpenStreetMap (plus court chemin depuis
 # les entrées des gares), ce qui donne un temps réel en chaque point et pas seulement des tranches.
 
+def overpass_alive(url):
+    """Miroir joignable ? (page /status en moins de 10 s ; un miroir en panne fait sinon attendre 2 min)"""
+    try:
+        return requests.get(url.rsplit("/", 1)[0] + "/status", headers=HEADERS, timeout=10).status_code == 200
+    except requests.RequestException:
+        return False
+
+
 def overpass_wait_slot(url, log):
     """Attend qu'un créneau soit libre pour notre IP (page /status du serveur Overpass)."""
     status_url = url.rsplit("/", 1)[0] + "/status"
@@ -392,27 +402,38 @@ def osm_tile(i, j, log=print):
     query = f'[out:json][timeout:180];way["highway"]({s:.4f},{w:.4f},{s + dlat:.4f},{w + dlon:.4f});out body;>;out skel qt;'
 
     def fetch():
-        # serveur principal d'abord (le plus rapide), en respectant sa limite de débit ;
-        # miroirs en dernier recours, avec un délai plus court (souvent lents ou saturés)
-        plan = [OVERPASS[0]] * 4 + OVERPASS[1:] + [OVERPASS[0]] * 2
-        err = ""
+        # les deux machines principales en alternance (504 rapide = machine saturée : l'autre peut répondre),
+        # en respectant leur quota ; puis les miroirs joignables ; puis un dernier tour des principales
+        plan = OVERPASS * 3 + [u for u in OVERPASS_MIRRORS if overpass_alive(u)] + OVERPASS
+        err, tried = "", set()
         for attempt, url in enumerate(plan):
             host = url.split("/")[2]
-            if url == OVERPASS[0]:
+            if url in tried:  # nouveau passage sur une machine qui a échoué : lui laisser du répit
+                wait = 15 * min(attempt // 2 + 1, 4)
+                log(f"Overpass : nouvel essai sur {host} dans {wait} s")
+                time.sleep(wait)
+            tried.add(url)
+            if url in OVERPASS:
                 overpass_wait_slot(url, log)
             try:
+                # connexion en 10 s au plus ; lecture : délai entre deux paquets reçus
                 r = requests.post(url, data={"data": query}, headers=HEADERS,
-                                  timeout=240 if url == OVERPASS[0] else 120)
+                                  timeout=(10, 240 if url in OVERPASS else 120))
                 if r.status_code == 200 and r.content[:1] == b"{":
-                    return r.content
-                err = f"HTTP {r.status_code}"
-            except requests.RequestException as e:
+                    data = json.loads(r.content)
+                    # délai ou mémoire dépassés côté serveur : HTTP 200 mais réponse tronquée, signalée
+                    # par « remark » ; une dalle sans voie vient d'un serveur sans données d'Île-de-France
+                    if "remark" in data:
+                        err = f"réponse incomplète ({data['remark'][:80]})"
+                    elif not any(e["type"] == "way" for e in data["elements"]):
+                        err = "réponse sans voie"
+                    else:
+                        return r.content
+                else:
+                    err = f"HTTP {r.status_code}"
+            except (requests.RequestException, ValueError) as e:
                 err = type(e).__name__
-            if attempt == len(plan) - 1:
-                break
-            wait = 15 * min(attempt + 1, 4)  # 429 / 504 : serveur chargé
-            log(f"Overpass, essai {attempt + 1} ({host}) : {err}, nouvel essai dans {wait} s")
-            time.sleep(wait)
+            log(f"Overpass, essai {attempt + 1}/{len(plan)} ({host}) : {err}")
         raise RuntimeError(f"Overpass indisponible ({err}), réessayez plus tard")
     return json.loads(cached(d / f"{i}_{j}.json", fetch).read_bytes())
 
