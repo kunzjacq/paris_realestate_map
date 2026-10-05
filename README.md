@@ -44,8 +44,9 @@ l'autre (navigateur), comme la dernière vue de la carte.
   communes téléchargées est assombri. Avec une couche de contexte, la zone n'est pas teintée et son trait est noir.
 - **Communes non téléchargées** : voile gris hachuré. Un clic dessus propose « Ajouter cette commune ».
 - **Contour pointillé bleu** : zone atteignable dans le temps choisi (temps de trajet seul).
-- **Quartiers** (option « Quartiers » d'« Affichage ») : limites en pointillés gris, de la même épaisseur que celles des communes, à partir du zoom 13 ;
-  noms en italique à partir du zoom 15 ; le quartier sous la souris est éclairci et cerné d'un trait plein ; l'encadré de survol indique la commune et le quartier du point.
+- **Quartiers** (option « Quartiers » d'« Affichage ») : limites en pointillés gris, de la même épaisseur que
+  celles des communes, à partir du zoom 13 ; noms en italique à partir du zoom 15 ; le quartier sous la souris
+  est éclairci et cerné d'un trait plein ; l'encadré de survol indique la commune et le quartier du point.
 - **Gares** : seules les 3 plus proches de la souris sont affichées, avec leurs accès et leur nom (rose : RER,
   bleu : Transilien, jaune : métro) ; la gare retenue pour le point survolé est agrandie.
 - **Encadré en bas à droite** (point sous la souris, pointeur en croix) : gare la plus rapide à atteindre,
@@ -68,8 +69,10 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
 2. **Contours des communes d'Île-de-France** : chargés depuis `data/raw/idf_communes.gpkg` (téléchargés une
    fois sur geo.api.gouv.fr) ; ils servent à la recherche et aux requêtes « commune sous un point ».
 3. **Index** : `web/data/index.json` est créé s'il manque.
-4. **Mises à niveau des données existantes** : résumé des plages de pollution et quartiers
-   (`quartiers.geojson`) ajoutés aux communes qui ne les ont pas, versions compressées `.gz` créées ou rafraîchies, et communes produites avec un format de
+4. **Mises à niveau des données existantes** : résumé des plages de pollution ajouté aux communes qui ne
+   l'ont pas ; quartiers (`quartiers.geojson`, `quartiers_limites.geojson`) calculés pour les communes qui
+   n'en ont pas ou dont le calcul est antérieur (`QUARTIERS_FORMAT` dans `pipeline.py`), sans reconstruire
+   les communes ; versions compressées `.gz` créées ou rafraîchies ; communes produites avec un format de
    données antérieur (`DATA_FORMAT` dans `pipeline.py`) mises en file de reconstruction.
 5. **Cache du fond de carte** : tuiles de plus de 6 mois supprimées (en arrière-plan).
 
@@ -114,13 +117,15 @@ quand le numéro de version change, elle recharge l'index et affiche les commune
 Avant chaque construction, le serveur vérifie si `scripts/pipeline.py` a été modifié depuis son
 chargement : si oui, il le recharge et remet en file les communes au format de données antérieur. Une
 modification du pipeline ne demande donc pas de redémarrer le serveur ; une modification de `server.py`, si.
+Exception : les quartiers d'un calcul antérieur (`QUARTIERS_FORMAT`) ne sont recalculés qu'au démarrage.
 
 ### Âge des données et mise à jour
 
 Chaque fichier téléchargé (`data/raw/`) est daté de son téléchargement. `GET /api/freshness` les regroupe par
 source : gares et accès IDFM, contours des communes, indice air-bruit, bruit DRIEAT (communs à toutes les
-communes), réseau OSM, pollution Airparif, bruit routier et ferroviaire Bruitparif, quartiers Linternaute (propres à
-chaque commune).
+communes), réseau OSM, pollution Airparif, bruit routier et ferroviaire Bruitparif, quartiers Linternaute,
+contours IRIS de l'IGN (propres à chaque commune). Les tuiles du fond de carte ont leur propre durée de vie
+(voir « Fichiers servis »).
 Une commune est à mettre à jour si l'une de ses données a plus de 6 mois (`MAX_AGE_DAYS` dans `pipeline.py`),
 si une donnée commune a plus de 6 mois, ou si une mise à jour précédente a été interrompue avant elle.
 
@@ -142,8 +147,9 @@ Aucune donnée n'est donc effacée avant que sa nouvelle version soit disponible
 Le navigateur ne charge les données détaillées d'une commune que lorsqu'elle est visible à l'écran (avec une
 marge de 15 %), quatre communes à la fois au plus, les plus proches du centre de la vue d'abord ; un
 chargement qui échoue est réessayé quelques secondes plus tard. Au démarrage, il ne reçoit que le résumé
-(`meta.json`) et le contour de chaque commune, et la carte rouvre sur la dernière vue utilisée. Le bloc « Zone retenue » additionne pourtant toutes les communes
-actives : il est calculé par le serveur, avec les mêmes règles que l'application.
+(`meta.json`) et le contour de chaque commune, et la carte rouvre sur la dernière vue utilisée. Le bloc « Zone
+retenue » additionne pourtant toutes les communes actives : il est calculé par le serveur, avec les mêmes
+règles que l'application.
 
 ```json
 POST /api/stats
@@ -197,10 +203,11 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
 
 ## Limites
 
-- Bruit routier et ferroviaire : Bruitparif ne publie ces cartes que sous forme d'images. Chaque pixel est reconverti dans
-  la classe dont la couleur de légende est la plus proche (tuiles de niveau 16, ~2,4 m). Les pixels de
-  couleur mélangée (bords de classes) sont ignorés, puis chaque cellule de 10 m prend la classe majoritaire.
-  Hors agglomération, seuls les grands axes sont cartographiés ; la commune est alors signalée « ⚠ route ».
+- Bruit routier et ferroviaire : Bruitparif ne publie ces cartes que sous forme d'images. Chaque pixel est
+  reconverti dans la classe dont la couleur de légende est la plus proche (tuiles de niveau 16, ~2,4 m). Les
+  pixels de couleur mélangée (bords de classes) sont ignorés, puis chaque cellule de 10 m prend la classe
+  majoritaire. Hors agglomération, seuls les grands axes sont cartographiés ; la commune est alors
+  signalée « ⚠ route ».
 - Bruit ferroviaire : la DRIEAT ne publie pas de carte pour la Seine-et-Marne, les Yvelines, ni pour
   l'Essonne et le Val-d'Oise hors Métropole du Grand Paris ; la carte Bruitparif comble ces manques.
 - Format des données : `DATA_FORMAT` dans `scripts/pipeline.py`. Au démarrage, et après une modification
@@ -226,31 +233,33 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
 - Quartiers : endpoint interne et non documenté de Linternaute, qui peut changer ; licence de réutilisation
   non précisée. Ses quartiers sont des IRIS ou des regroupements d'IRIS aux contours très simplifiés (une
   vingtaine de sommets : bords communs déformés, languettes prises au voisin, écarts jusqu'à ~80 m avec la
-  limite communale) ; seuls leurs noms et leur regroupement sont donc gardés, les contours venant des IRIS
-  de l'IGN. Un quartier qui ne correspond pas à ses IRIS (surface commune / surface réunie < 0,6 :
-  bandes de Seine à Paris, un quartier de Franconville) garde son contour Linternaute, privé des quartiers
-  voisins ; si c'est le cas de la plupart des quartiers d'une commune, elle garde ceux de Linternaute
-  (`quartiers_source` dans `meta.json`). Quelques quartiers gardent des bandes étroites (20-30 m) le long
-  d'une rivière : ce sont des quais rattachés par l'INSEE à un autre IRIS que les maisons qui les bordent
-  (Quai de l'Artois à La Prairie de Nogent, Quai Gallieni à Fourchette-Polangis), conservés tels quels.
-  Certaines petites communes n'ont pas de découpage ; à
-  Le Chesnay-Rocquencourt et Saint-Denis, seuls ~60 % et ~78 % de la commune sont couverts. Un échec de
-  téléchargement n'empêche pas la construction : les quartiers manquent et le serveur réessaie à son
-  démarrage suivant. Après une modification de leur calcul (`QUARTIERS_FORMAT` dans `pipeline.py`), les
-  quartiers sont recalculés au démarrage du serveur, sans reconstruire les communes.
+  limite communale) ; seuls leurs noms et leur regroupement sont donc gardés, les contours venant des IRIS de
+  l'IGN. Un quartier qui ne correspond pas à ses IRIS (surface commune / surface réunie < 0,6 : bandes de
+  Seine à Paris, un quartier de Franconville) garde son contour Linternaute, privé des quartiers voisins ; si
+  c'est le cas de la plupart des quartiers d'une commune, elle garde ceux de Linternaute (`quartiers_source`
+  dans `meta.json`). Quelques quartiers gardent des bandes étroites (20-30 m) le long d'une rivière : ce sont
+  des quais rattachés par l'INSEE à un autre IRIS que les maisons qui les bordent (Quai de l'Artois à La
+  Prairie de Nogent, Quai Gallieni à Fourchette-Polangis), conservés tels quels. Certaines petites communes
+  n'ont pas de découpage ; à Le Chesnay-Rocquencourt et Saint-Denis, seuls ~60 % et ~78 % de la commune sont
+  couverts. Un échec de téléchargement n'empêche pas la construction : les quartiers manquent et le serveur
+  réessaie à son démarrage suivant. Après une modification de leur calcul (`QUARTIERS_FORMAT` dans
+  `pipeline.py`), les quartiers sont recalculés au démarrage du serveur, sans reconstruire les communes.
 
 ## Dépôt git et données
 
-Dépôt : https://github.com/kunzjacq/paris_realestate_map. Il ne contient que le code. Les données sont hors dépôt (`.gitignore`) :
+Dépôt : https://github.com/kunzjacq/paris_realestate_map. Il ne contient que le code. Les données sont hors
+dépôt (`.gitignore`) :
 
 | Dossier | Contenu | Taille |
 |---|---|---|
-| `web/data/` | communes construites, index, gares (couches en `.bin` et regroupées dans `layers.pack`, plus les `.gz`) | ~15 Mo par commune (2,1 Go pour 142 communes) |
-| `data/raw/` | téléchargements en cache : dalles OSM, rasters Airparif, cartes de bruit, gares IDFM, quartiers, IRIS, tuiles du fond de carte… | ~3 Go pour 142 communes |
+| `web/data/` | communes construites, index, gares (couches en `.bin` et regroupées dans `layers.pack`, plus les `.gz`) | ~15 Mo par commune (2,6 Go pour 177 communes) |
+| `data/raw/` | téléchargements en cache : dalles OSM, rasters Airparif, cartes de bruit, gares IDFM, quartiers, IRIS… | ~3,6 Go pour 177 communes |
+| `data/raw/tiles/` | tuiles du fond de carte, au fil de la consultation | selon les zones vues (voir « Limites ») |
 
 Tout se régénère avec les scripts, mais certaines sources sont lentes ou parfois indisponibles (Overpass,
-Airparif). `scripts/data_archive.py` sauvegarde ces données dans une archive `.tar.gz` et les restaure ;
-il n'utilise que la bibliothèque standard (Python ≥ 3.12) et ne demande pas d'environnement virtuel.
+Airparif). `scripts/data_archive.py` sauvegarde ces données dans une archive `.tar.gz` ou `.tar.xz` et les
+restaure ; il n'utilise que la bibliothèque standard (Python ≥ 3.12) et ne demande pas d'environnement
+virtuel.
 
 ```sh
 python3 scripts/data_archive.py save                     # web/data + data/raw (gzip, ~580 Mo pour 177 communes)
@@ -260,19 +269,18 @@ python3 scripts/data_archive.py save mes-donnees.tar.xz  # nom d'archive choisi 
 python3 scripts/data_archive.py restore immo_map-data-AAAAMMJJ.tar.xz
 ```
 
-**`save`** crée par défaut `immo_map-data-AAAAMMJJ.tar.gz` à la racine du projet (ignoré par git).
-Avec `--xz` (ou un nom finissant par `.xz`), l'archive est compressée en xz : ~25 % plus petite, créée en
-une trentaine de secondes si la commande `xz` est installée (tous les cœurs), sinon en ~7 min par le module
-`lzma` de Python (un seul cœur). Sont omis
-les fichiers recalculables : les versions compressées `.gz` et les paquets `layers.pack` de `web/data/`
-(recréés au démarrage du serveur), `data/raw/airbruit2024.gpkg` (conversion de `airbruit2024.zip`, refaite à la demande)
-et les tuiles du fond de carte (`data/raw/tiles/`, retéléchargées à la demande). Avec `--no-cache`,
-seul `web/data/` est archivé : l'application fonctionne, mais ajouter ou reconstruire une commune
-retéléchargera ses données.
+**`save`** crée par défaut `immo_map-data-AAAAMMJJ.tar.gz` à la racine du projet (ignoré par git). Avec `--xz`
+(ou un nom finissant par `.xz`), l'archive est compressée en xz : ~25 % plus petite, créée en une trentaine de
+secondes si la commande `xz` est installée (tous les cœurs), sinon en ~7 min par le module `lzma` de Python
+(un seul cœur). Sont omis les fichiers recalculables : les versions compressées `.gz` et les paquets
+`layers.pack` de `web/data/` (recréés au démarrage du serveur), `data/raw/airbruit2024.gpkg` (conversion de
+`airbruit2024.zip`, refaite à la demande) et les tuiles du fond de carte (`data/raw/tiles/`, retéléchargées à
+la demande). Avec `--no-cache`, seul `web/data/` est archivé : l'application fonctionne, mais ajouter ou
+reconstruire une commune retéléchargera ses données.
 
 **`restore`** reconnaît la compression (gzip, xz, bzip2 ou aucune) d'après le contenu du fichier, quel
-que soit son nom, et extrait l'archive à la racine du projet ; il refuse une archive contenant des chemins hors de
-`web/data/` et `data/raw/`. Les fichiers existants de même nom sont remplacés, les autres conservés.
+que soit son nom, et extrait l'archive à la racine du projet ; il refuse une archive contenant des chemins
+hors de `web/data/` et `data/raw/`. Les fichiers existants de même nom sont remplacés, les autres conservés.
 Ensuite, `./run.sh` recrée les versions compressées et reconstruit les éventuelles communes d'un format
 antérieur.
 
