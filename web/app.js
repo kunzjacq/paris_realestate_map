@@ -478,9 +478,11 @@ function initMap() {
     `https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${layer}&STYLE=normal` +
     `&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=${fmtImg}`;
   const ign = '© <a href="https://www.ign.fr/">IGN</a>';
+  // avec le serveur local, tuiles IGN gardées sur disque (consultables hors ligne), sinon prises chez l'IGN
+  const ignUrl = (name, layer, fmtImg) => serverMode ? `tiles/${name}/{z}/{x}/{y}` : wmts(layer, fmtImg);
   const bases = {
-    "Plan IGN": L.tileLayer(wmts("GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2", "image/png"), { maxZoom: 19, attribution: ign }),
-    "Photo aérienne": L.tileLayer(wmts("ORTHOIMAGERY.ORTHOPHOTOS", "image/jpeg"), { maxZoom: 19, attribution: ign }),
+    "Plan IGN": L.tileLayer(ignUrl("plan", "GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2", "image/png"), { maxZoom: 19, attribution: ign }),
+    "Photo aérienne": L.tileLayer(ignUrl("ortho", "ORTHOIMAGERY.ORTHOPHOTOS", "image/jpeg"), { maxZoom: 19, attribution: ign }),
     "OpenStreetMap": L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19, attribution: "© OpenStreetMap" }),
   };
@@ -1508,13 +1510,13 @@ function initPanel() {
 
 async function main() {
   loadState();
-  initMap();
-  initPanel();
-  initControls();
-  try {
+  try {  // avant initMap : le fond de carte passe par le serveur local s'il y en a un
     lastVersion = (await getJSON("api/status")).version;
     serverMode = true;
   } catch (e) { serverMode = false; }
+  initMap();
+  initPanel();
+  initControls();
   $("add-box").hidden = !serverMode;
   $("static-note").hidden = serverMode;
   if (serverMode) { initSearch(); initRefresh(); loadFreshness(); }

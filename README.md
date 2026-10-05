@@ -71,6 +71,7 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
 4. **Mises à niveau des données existantes** : résumé des plages de pollution et quartiers
    (`quartiers.geojson`) ajoutés aux communes qui ne les ont pas, versions compressées `.gz` créées ou rafraîchies, et communes produites avec un format de
    données antérieur (`DATA_FORMAT` dans `pipeline.py`) mises en file de reconstruction.
+5. **Cache du fond de carte** : tuiles de plus de 6 mois supprimées (en arrière-plan).
 
 ### Fichiers servis
 
@@ -79,7 +80,14 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
   (`layers.pack`, une requête par commune au lieu d'une vingtaine). Chaque fichier existe aussi en version
   compressée (`.gz`, ~5 fois plus petite), envoyée avec `Content-Encoding: gzip` aux navigateurs qui
   l'acceptent. Le serveur crée au démarrage les paquets et versions compressées manquants.
-- Tous les fichiers servis portent `Cache-Control: no-cache` : le navigateur revérifie chaque fichier (requête
+- `/tiles/<plan|ortho>/<z>/<x>/<y>` : tuiles IGN du fond de carte (Plan IGN, photo aérienne), gardées
+  dans `data/raw/tiles/` au fil de la consultation : une zone déjà vue s'affiche hors ligne. Une tuile
+  absente ou de plus de 6 mois (`TILE_MAX_AGE_DAYS` dans `pipeline.py`) est (re)demandée à l'IGN, avec
+  quelques essais en cas d'erreur ; si l'IGN ne répond pas, l'ancienne version est servie. Seules ces deux
+  couches sont relayées (pas de relais vers d'autres adresses) ; le fond OpenStreetMap reste chargé
+  directement (ses règles d'usage interdisent ce stockage). Servie par un simple serveur statique,
+  l'application prend les tuiles IGN en ligne.
+- Les autres fichiers servis portent `Cache-Control: no-cache` : le navigateur revérifie chaque fichier (requête
   conditionnelle, réponse 304 s'il n'a pas changé) et ne garde donc jamais une ancienne version d'`app.js`
   ou des données après une mise à jour.
 
@@ -208,9 +216,11 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
   un HTTP 200) ou sans aucune voie n'est jamais mise en cache. Une dalle de Paris peut peser 34 Mo. Une fois
   les dalles en cache, une commune voisine ne demande plus rien à Overpass.
 - Fond de carte : le serveur de tuiles de l'IGN renvoie parfois une erreur 404 pour une tuile qui existe,
-  que le navigateur garde en cache 21 jours (`Cache-Control: max-age=1814400`). L'application redemande
-  une tuile en échec sans le cache (jusqu'à 3 essais, après 1, 3 puis 9 s), ce qui remplace aussi
-  l'erreur mémorisée.
+  que le navigateur garderait en cache 21 jours (`Cache-Control: max-age=1814400`). Le serveur local
+  réessaie et ne transmet jamais d'erreur mise en cache (`no-store`) ; l'application redemande en plus
+  une tuile en échec sans le cache (jusqu'à 3 essais, après 1, 3 puis 9 s). Le cache des tuiles n'a pas
+  de taille maximale : ~70 Ko par tuile, soit ~1 Go pour les communes chargées jusqu'au zoom 16, bien plus
+  aux zooms supérieurs (~60 Go au zoom 19 si tout était consulté).
 - En WCS 2.0, le GeoServer d'Airparif échoue sur certaines emprises. Le pipeline utilise donc
   WCS 1.0 et vérifie qu'il reçoit bien un GeoTIFF.
 - Quartiers : endpoint interne et non documenté de Linternaute, qui peut changer ; licence de réutilisation
@@ -236,7 +246,7 @@ Dépôt : https://github.com/kunzjacq/paris_realestate_map. Il ne contient que l
 | Dossier | Contenu | Taille |
 |---|---|---|
 | `web/data/` | communes construites, index, gares (couches en `.bin` et regroupées dans `layers.pack`, plus les `.gz`) | ~15 Mo par commune (2,1 Go pour 142 communes) |
-| `data/raw/` | téléchargements en cache : dalles OSM, rasters Airparif, cartes de bruit, gares IDFM… | ~3 Go pour 142 communes |
+| `data/raw/` | téléchargements en cache : dalles OSM, rasters Airparif, cartes de bruit, gares IDFM, quartiers, IRIS, tuiles du fond de carte… | ~3 Go pour 142 communes |
 
 Tout se régénère avec les scripts, mais certaines sources sont lentes ou parfois indisponibles (Overpass,
 Airparif). `scripts/data_archive.py` sauvegarde ces données dans une archive `.tar.gz` et les restaure ;
@@ -255,7 +265,8 @@ Avec `--xz` (ou un nom finissant par `.xz`), l'archive est compressée en xz : ~
 une trentaine de secondes si la commande `xz` est installée (tous les cœurs), sinon en ~7 min par le module
 `lzma` de Python (un seul cœur). Sont omis
 les fichiers recalculables : les versions compressées `.gz` et les paquets `layers.pack` de `web/data/`
-(recréés au démarrage du serveur) et `data/raw/airbruit2024.gpkg` (conversion de `airbruit2024.zip`, refaite à la demande). Avec `--no-cache`,
+(recréés au démarrage du serveur), `data/raw/airbruit2024.gpkg` (conversion de `airbruit2024.zip`, refaite à la demande)
+et les tuiles du fond de carte (`data/raw/tiles/`, retéléchargées à la demande). Avec `--no-cache`,
 seul `web/data/` est archivé : l'application fonctionne, mais ajouter ou reconstruire une commune
 retéléchargera ses données.
 

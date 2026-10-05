@@ -14,6 +14,9 @@ API (JSON) :
   GET    /api/freshness[?days=N]        âge des données en cache : sources et communes de plus de 6 mois
   POST   /api/refresh                   met en file la mise à jour des données de plus de 6 mois
   GET    /api/status                    état de la file (le front le sonde pendant les constructions)
+
+Fond de carte : GET /tiles/<plan|ortho>/<z>/<x>/<y> sert les tuiles IGN, gardées dans data/raw/tiles/
+(retéléchargées après 6 mois ; les plus anciennes sont supprimées au démarrage).
 """
 
 import importlib
@@ -121,13 +124,13 @@ JOBS = Jobs()
 
 class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
-        if "/api/status" not in self.path:
+        if "/api/status" not in self.path and not self.path.startswith("/tiles/"):
             super().log_message(fmt, *args)
 
     def end_headers(self):
         # le navigateur doit revérifier chaque fichier (code de l'application et données changent) ;
         # sans cela il peut garder une ancienne version d'app.js après une mise à jour
-        if not self.path.startswith("/api/"):
+        if not self.path.startswith(("/api/", "/tiles/")):
             self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
@@ -165,8 +168,30 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
         return True
 
+    def send_tile(self, path):
+        """Tuile IGN du fond de carte (cache local, voir pipeline.basemap_tile)."""
+        parts = path.split("/")[2:]  # /tiles/<nom>/<z>/<x>/<y>
+        tile = None
+        if len(parts) == 4 and all(v.isdigit() for v in parts[1:]):
+            tile = pipeline.basemap_tile(parts[0], *map(int, parts[1:]))
+        if tile is None:
+            self.send_response(404)
+            self.send_header("Cache-Control", "no-store")  # sans quoi le navigateur garderait l'erreur
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        body, ctype = tile
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "max-age=604800")  # 7 jours ; le cache disque fait le reste
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         u = urlparse(self.path)
+        if u.path.startswith("/tiles/"):
+            return self.send_tile(u.path)
         if not u.path.startswith("/api/"):
             if u.path.startswith("/data/") and self.send_gzip_if_available(u.path):
                 return
@@ -240,6 +265,11 @@ def main():
     n = pipeline.compress_missing()
     if n:
         print(f"{n} fichiers de données compressés", flush=True)
+    def purge():
+        removed, kept, size = pipeline.purge_tiles()
+        print(f"fond de carte : {kept} tuiles en cache ({size / 1e6:.0f} Mo)"
+              + (f", {removed} de plus de {pipeline.TILE_MAX_AGE_DAYS} jours supprimées" if removed else ""), flush=True)
+    threading.Thread(target=purge, daemon=True).start()  # en arrière-plan : le cache peut être gros
     outdated = pipeline.outdated_communes()
     if outdated:
         print(f"reconstruction des communes au format ancien : {', '.join(outdated)}", flush=True)

@@ -1214,6 +1214,70 @@ def zone_stats(codes, q):
     return out
 
 
+# --------------------------------------------------------------------------- fond de carte
+
+# Tuiles IGN servies par le serveur local et gardées sur disque au fil de la consultation : une zone déjà
+# vue reste disponible hors ligne. Seules ces deux couches sont relayées (pas de relais ouvert) ;
+# OpenStreetMap reste en ligne (ses règles d'usage interdisent ce stockage).
+TILES_DIR = RAW / "tiles"
+TILE_MAX_AGE_DAYS = MAX_AGE_DAYS  # au-delà, tuile retéléchargée à sa prochaine demande, supprimée au démarrage
+TILE_MAX_ZOOM = 19
+BASEMAPS = {  # nom dans l'URL locale -> (couche WMTS de l'IGN, format, extension du fichier en cache)
+    "plan": ("GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2", "image/png", "png"),
+    "ortho": ("ORTHOIMAGERY.ORTHOPHOTOS", "image/jpeg", "jpg"),
+}
+IGN_WMTS = "https://data.geopf.fr/wmts"
+
+
+def basemap_tile(name, z, x, y):
+    """(contenu, type) de la tuile, depuis le cache si elle a moins de TILE_MAX_AGE_DAYS, sinon de l'IGN ;
+    None si elle n'existe pas (ou si l'IGN est injoignable et qu'aucune version n'est en cache). Une tuile
+    en cache trop ancienne est encore servie quand l'IGN ne répond pas."""
+    if name not in BASEMAPS or not 0 <= z <= TILE_MAX_ZOOM or not (0 <= x < 2 ** z and 0 <= y < 2 ** z):
+        return None
+    layer, fmt, ext = BASEMAPS[name]
+    f = TILES_DIR / name / str(z) / str(x) / f"{y}.{ext}"
+    if f.exists() and time.time() - f.stat().st_mtime < TILE_MAX_AGE_DAYS * 86400:
+        return f.read_bytes(), fmt
+    params = {"SERVICE": "WMTS", "REQUEST": "GetTile", "VERSION": "1.0.0", "LAYER": layer, "STYLE": "normal",
+              "TILEMATRIXSET": "PM", "TILEMATRIX": z, "TILEROW": y, "TILECOL": x, "FORMAT": fmt}
+    for attempt in range(3):  # l'IGN renvoie parfois 404 pour une tuile qui existe : quelques essais
+        try:
+            r = requests.get(IGN_WMTS, params=params, headers=HEADERS, timeout=(5, 30))
+        except requests.RequestException:
+            break
+        if r.status_code == 200 and r.headers.get("Content-Type", "").startswith("image/"):
+            f.parent.mkdir(parents=True, exist_ok=True)
+            tmp = f.with_name(f"{f.name}.{os.getpid()}.{threading.get_ident()}.part")
+            tmp.write_bytes(r.content)
+            os.replace(tmp, f)
+            return r.content, fmt
+        if r.status_code != 404 and r.status_code < 500:
+            break
+        time.sleep(0.3 * (attempt + 1))
+    return (f.read_bytes(), fmt) if f.exists() else None
+
+
+def purge_tiles():
+    """Supprime les tuiles en cache de plus de TILE_MAX_AGE_DAYS ; renvoie (supprimées, gardées, octets gardés)."""
+    cutoff = time.time() - TILE_MAX_AGE_DAYS * 86400
+    removed = kept = size = 0
+    for f in TILES_DIR.rglob("*"):
+        if not f.is_file():
+            continue
+        st = f.stat()
+        if st.st_mtime < cutoff or f.name.endswith(".part"):
+            f.unlink(missing_ok=True)
+            removed += 1
+        else:
+            kept += 1
+            size += st.st_size
+    for d in sorted((d for d in TILES_DIR.rglob("*") if d.is_dir()), key=lambda d: -len(d.parts)):
+        if not any(d.iterdir()):
+            d.rmdir()
+    return removed, kept, size
+
+
 # --------------------------------------------------------------------------- âge des données et mise à jour
 
 def _global_sources():
