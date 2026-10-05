@@ -245,7 +245,7 @@ QUARTIER_RENAMES = {  # code INSEE -> {nom Linternaute: nom affiché}
 }
 
 
-QUARTIERS_FORMAT = 4     # à incrémenter quand le calcul des quartiers change : recalculés au démarrage du serveur
+QUARTIERS_FORMAT = 5     # à incrémenter quand le calcul des quartiers change : recalculés au démarrage du serveur
 IRIS_MIN_COVER = 0.5   # IRIS attribué à un quartier si les quartiers Linternaute en couvrent au moins la moitié
 IRIS_MIN_IOU = 0.6     # en deçà pour un quartier (surface commune / surface réunie), découpage jugé sans rapport
 IRIS_FALLBACK_OPEN_M = 8  # quartier gardé en contour Linternaute : parties de moins de 16 m de large retirées
@@ -273,9 +273,25 @@ def quartiers(code, commune_wgs, log=print):
         return None
     rebuilt = quartiers_from_iris(g, iris, log)
     out = rebuilt if rebuilt is not None else g
+    if code == "75056":
+        out = with_arrondissement(out, iris)
     out = gpd.clip(out, commune_wgs, keep_geom_type=True)
     out = out[~out.geometry.is_empty].sort_values("nom").reset_index(drop=True)
     out.attrs["source"] = rebuilt.attrs["source"] if rebuilt is not None else "linternaute"
+    return out
+
+
+def with_arrondissement(g, iris):
+    """Paris : code postal de l'arrondissement ajouté au nom (« Père Lachaise-Réunion (75020) »),
+    d'après l'IRIS qui couvre la plus grande partie du quartier (IRIS de l'arrondissement 751xx -> 750xx)."""
+    gl, il = g.to_crs(2154).reset_index(drop=True), iris.to_crs(2154)
+    inter = gpd.overlay(il[["code_insee", "geometry"]], gl.assign(k=gl.index)[["k", "geometry"]],
+                        how="intersection", keep_geom_type=True)
+    inter["a"] = inter.area
+    arr = inter.sort_values("a").groupby("k").tail(1).set_index("k").code_insee
+    out = g.reset_index(drop=True).copy()
+    out["nom"] = [f"{n} (750{arr[k][-2:]})" if k in arr.index else n for k, n in enumerate(out.nom)]
+    out.attrs = g.attrs
     return out
 
 
