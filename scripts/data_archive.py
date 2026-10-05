@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Sauvegarde et restauration des données hors dépôt git (communes construites, téléchargements en cache).
 
     python3 scripts/data_archive.py save [--no-cache] [fichier.tar.gz]
