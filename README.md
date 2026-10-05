@@ -44,8 +44,8 @@ l'autre (navigateur), comme la dernière vue de la carte.
   communes téléchargées est assombri. Avec une couche de contexte, la zone n'est pas teintée et son trait est noir.
 - **Communes non téléchargées** : voile gris hachuré. Un clic dessus propose « Ajouter cette commune ».
 - **Contour pointillé bleu** : zone atteignable dans le temps choisi (temps de trajet seul).
-- **Quartiers** (option « Quartiers » d'« Affichage ») : limites en pointillés gris fins, noms en italique à
-  partir du zoom 14 ; l'encadré de survol indique la commune et le quartier du point.
+- **Quartiers** (option « Quartiers » d'« Affichage ») : limites en pointillés gris, de la même épaisseur que celles des communes ; noms en italique à
+  partir du zoom 14 ; le quartier sous la souris est éclairci et cerné d'un trait plein ; l'encadré de survol indique la commune et le quartier du point.
 - **Gares** : seules les 3 plus proches de la souris sont affichées, avec leurs accès et leur nom (rose : RER,
   bleu : Transilien, jaune : métro) ; la gare retenue pour le point survolé est agrandie.
 - **Encadré en haut à droite** (point sous la souris, pointeur en croix) : gare la plus rapide à atteindre,
@@ -183,7 +183,7 @@ taille de cellule…
 | Bruit ferroviaire | Bruitparif, CSB E4 consolidée (`CSB4_w4echConso_Fer_A_Lden`), complétée par la DRIEAT (CSB E4 2022, SNCF et RATP) | Lden en 8 classes ; dans chaque cellule, la valeur la plus élevée des deux sources |
 | Indice global (option) | Bruitparif/Airparif, cartographie air-bruit 2024 | 3 niveaux, route + fer + avion |
 | Contours des communes | geo.api.gouv.fr | |
-| Quartiers | Linternaute, carte « Liste des quartiers » des pages ville (données Yanport, endpoint `/od/map`, réponses en cache dans `data/raw/quartiers/`) | polygones nommés, découpés par le contour de la commune ; `quartiers.geojson` par commune ; noms corrigés au besoin dans `QUARTIER_RENAMES` (`pipeline.py`) |
+| Quartiers | Noms et regroupement : Linternaute, carte « Liste des quartiers » des pages ville (données Yanport, endpoint `/od/map`, cache `data/raw/quartiers/`). Contours : IRIS de l'IGN (Géoplateforme, WFS `STATISTICALUNITS.IRIS:contours_iris`, cache `data/raw/iris/`) | chaque IRIS va au quartier Linternaute qui en contient la plus grande part ; découpés par le contour de la commune ; `quartiers.geojson` par commune, et `quartiers_limites.geojson` (chaque limite entre quartiers une seule fois, hors limite communale, pour des pointillés nets) ; noms corrigés au besoin dans `QUARTIER_RENAMES` (`pipeline.py`) |
 
 Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'environ 10 m par commune.
 
@@ -210,10 +210,17 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
 - En WCS 2.0, le GeoServer d'Airparif échoue sur certaines emprises. Le pipeline utilise donc
   WCS 1.0 et vérifie qu'il reçoit bien un GeoTIFF.
 - Quartiers : endpoint interne et non documenté de Linternaute, qui peut changer ; licence de réutilisation
-  non précisée. Contours grossiers (une vingtaine de sommets par quartier), qui débordent de la commune ou
-  la laissent découverte jusqu'à ~80 m. Certaines petites communes n'ont pas de découpage ; à
-  Le Chesnay-Rocquencourt, seul ~60 % de la commune est couvert. Un échec de téléchargement n'empêche pas la
-  construction : le fichier manque et le serveur réessaie à son démarrage suivant.
+  non précisée. Ses quartiers sont des IRIS ou des regroupements d'IRIS aux contours très simplifiés (une
+  vingtaine de sommets : bords communs déformés, languettes prises au voisin, écarts jusqu'à ~80 m avec la
+  limite communale) ; seuls leurs noms et leur regroupement sont donc gardés, les contours venant des IRIS
+  de l'IGN. Un quartier qui ne correspond pas à ses IRIS (surface commune / surface réunie < 0,6 :
+  bandes de Seine à Paris, un quartier de Franconville) garde son contour Linternaute, privé des quartiers
+  voisins ; si c'est le cas de la plupart des quartiers d'une commune, elle garde ceux de Linternaute
+  (`quartiers_source` dans `meta.json`). Certaines petites communes n'ont pas de découpage ; à
+  Le Chesnay-Rocquencourt et Saint-Denis, seuls ~60 % et ~78 % de la commune sont couverts. Un échec de
+  téléchargement n'empêche pas la construction : les quartiers manquent et le serveur réessaie à son
+  démarrage suivant. Après une modification de leur calcul (`QUARTIERS_FORMAT` dans `pipeline.py`), les
+  quartiers sont recalculés au démarrage du serveur, sans reconstruire les communes.
 
 ## Dépôt git et données
 

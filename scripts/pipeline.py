@@ -6,6 +6,7 @@ web/data/communes/<code>/ :
   <couche>.bin   une couche raster par fichier (uint8 ou uint16, ligne par ligne, nord en haut)
   commune.geojson, stations.geojson, acces.geojson
   quartiers.geojson  découpage en quartiers (Linternaute), absent si le téléchargement a échoué
+  quartiers_limites.geojson  limites entre quartiers, chacune une seule fois (tracé en pointillés)
 
 web/data/index.json liste les communes construites ; web/data/global/ regroupe
 les gares et accès de toutes les communes pour l'affichage. Les contours des zones
@@ -38,8 +39,9 @@ from rasterio.fill import fillnodata
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
 from rasterio.warp import Resampling, reproject, transform_bounds
+from shapely import STRtree
 from shapely.geometry import Point, box, shape
-from shapely.ops import unary_union
+from shapely.ops import linemerge, unary_union
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw"
@@ -80,6 +82,7 @@ MODE_NAMES = {"walk": "à pied", "bike": "à vélo"}
 GEO_API = "https://geo.api.gouv.fr"
 AIRPARIF_WCS = "https://namek.airparif.fr/geoserver/ows"
 LINTERNAUTE_MAP = "https://www.linternaute.com/od/map"  # contours des quartiers (données Yanport)
+IGN_WFS = "https://data.geopf.fr/wfs/ows"                # contours IRIS (quartiers reconstruits)
 IDFM_API = "https://data.iledefrance-mobilites.fr/api/explore/v2.1/catalog/datasets"
 # Overpass : les deux machines d'overpass-api.de (lambert, puis gall via lz4.), chacune avec son propre quota
 # de créneaux par IP, essayées en alternance ; miroirs en dernier recours, seulement s'ils répondent
@@ -242,11 +245,42 @@ QUARTIER_RENAMES = {  # code INSEE -> {nom Linternaute: nom affiché}
 }
 
 
+QUARTIERS_FORMAT = 4     # à incrémenter quand le calcul des quartiers change : recalculés au démarrage du serveur
+IRIS_MIN_COVER = 0.5   # IRIS attribué à un quartier si les quartiers Linternaute en couvrent au moins la moitié
+IRIS_MIN_IOU = 0.6     # en deçà pour un quartier (surface commune / surface réunie), découpage jugé sans rapport
+IRIS_FALLBACK_OPEN_M = 8  # quartier gardé en contour Linternaute : parties de moins de 16 m de large retirées
+
+
 def quartiers(code, commune_wgs, log=print):
-    """Quartiers de la commune selon Linternaute (carte « Liste des quartiers », données Yanport),
-    découpés par le contour officiel de la commune : ils en débordent jusqu'à ~80 m. GeoDataFrame
-    (nom, geometry), vide si Linternaute ne découpe pas la commune, None si le téléchargement échoue
-    (la construction continue sans quartiers)."""
+    """Quartiers de la commune, découpés par son contour officiel ; GeoDataFrame (nom, geometry), vide si
+    Linternaute ne découpe pas la commune, None si un téléchargement échoue (la construction continue
+    sans quartiers, réessayés au démarrage suivant du serveur). attrs["source"] : "iris", "iris+linternaute"
+    (quelques quartiers sans correspondance) ou "linternaute".
+
+    Les quartiers de Linternaute (données Yanport) sont des IRIS de l'INSEE ou des regroupements d'IRIS,
+    aux contours très simplifiés : bords communs déformés (languettes de 15-25 m de large prises au voisin),
+    écarts jusqu'à ~80 m avec la limite communale. Chaque quartier est donc reconstruit à partir des
+    contours IRIS de l'IGN : chaque IRIS va au quartier qui en contient la plus grande part. Un quartier qui
+    ne correspond pas à ses IRIS (bandes de Seine à Paris, découpage propre à Linternaute) garde son
+    contour Linternaute, privé des quartiers voisins ; si c'est le cas de la plupart, toute la commune."""
+    g = linternaute_quartiers(code, log)
+    if g is None or not len(g):
+        return g
+    try:
+        iris = iris_contours(code)
+    except Exception as e:
+        log(f"contours IRIS indisponibles ({e})")
+        return None
+    rebuilt = quartiers_from_iris(g, iris, log)
+    out = rebuilt if rebuilt is not None else g
+    out = gpd.clip(out, commune_wgs, keep_geom_type=True)
+    out = out[~out.geometry.is_empty].sort_values("nom").reset_index(drop=True)
+    out.attrs["source"] = rebuilt.attrs["source"] if rebuilt is not None else "linternaute"
+    return out
+
+
+def linternaute_quartiers(code, log):
+    """Quartiers de la carte « Liste des quartiers » des pages ville de Linternaute (non découpés)."""
     d = RAW / "quartiers"
     d.mkdir(exist_ok=True)
 
@@ -270,29 +304,131 @@ def quartiers(code, commune_wgs, log=print):
     g = gpd.GeoDataFrame({"nom": [renames.get(n, n) for n in names]},
                          geometry=[shape(ft["geometry"]) for ft in feats], crs=4326)
     g["geometry"] = g.geometry.make_valid()
-    g = gpd.clip(g, commune_wgs, keep_geom_type=True)
-    return g[~g.geometry.is_empty].sort_values("nom").reset_index(drop=True)
+    return g
 
 
-def write_quartiers(d, g):
+def iris_contours(code):
+    """Contours IRIS de la commune (IGN, Géoplateforme) ; Paris : ceux de ses arrondissements (751xx)."""
+    d = RAW / "iris"
+    d.mkdir(exist_ok=True)
+    flt = "code_insee LIKE '751%'" if code == "75056" else f"code_insee='{code}'"
+
+    def fetch():
+        r = http_get(IGN_WFS, params={"SERVICE": "WFS", "VERSION": "2.0.0", "REQUEST": "GetFeature",
+                                      "TYPENAMES": "STATISTICALUNITS.IRIS:contours_iris", "COUNT": 5000,
+                                      "OUTPUTFORMAT": "application/json", "SRSNAME": "EPSG:4326",
+                                      "CQL_FILTER": flt})
+        j = r.json()
+        if not j["features"] or j.get("numberMatched", 0) != j.get("numberReturned"):  # vide ou incomplet
+            raise RuntimeError(f"réponse IGN inattendue ({j.get('numberReturned')}/{j.get('numberMatched')} IRIS)")
+        return r.content
+    return gpd.read_file(cached(d / f"{code}.json", fetch))
+
+
+def quartiers_from_iris(g, iris, log):
+    """Quartiers reconstruits en IRIS (noms de g), ou None si le découpage ne suit pas les IRIS."""
+    gl, il = g.to_crs(2154).reset_index(drop=True), iris.to_crs(2154)
+    inter = gpd.overlay(il[["code_iris", "geometry"]], gl.assign(k=gl.index)[["k", "geometry"]],
+                        how="intersection", keep_geom_type=True)
+    inter["a"] = inter.area
+    covered = inter.groupby("code_iris").a.sum() / il.set_index("code_iris").area
+    best = inter.sort_values("a").groupby("code_iris").tail(1).set_index("code_iris")
+    best = best[covered.reindex(best.index) >= IRIS_MIN_COVER]  # IRIS hors des quartiers : sans quartier
+    owner = best.k.to_dict()
+    # quartier englobé par un autre chez Linternaute (Île Saint-Louis dans « Seine et Berges ») : sans IRIS
+    # après le premier tour ; il reprend l'IRIS qui le couvre le plus s'il est surtout à lui
+    iris_area = il.set_index("code_iris").area
+    for k in gl.index:
+        if k in owner.values():
+            continue
+        mine = inter[inter.k == k].sort_values("a", ascending=False)
+        for r in mine.itertuples():
+            prev = owner.get(r.code_iris)
+            if r.a / iris_area[r.code_iris] >= IRIS_MIN_COVER and list(owner.values()).count(prev) > 1:
+                owner[r.code_iris] = k
+                break
+    geoms, bad = [], []
+    for k, q in enumerate(gl.geometry):
+        codes = [c for c, o in owner.items() if o == k]
+        u = unary_union(list(il[il.code_iris.isin(codes)].geometry)) if codes else None
+        iou = u.intersection(q).area / u.union(q).area if u is not None else 0
+        geoms.append(u if iou >= IRIS_MIN_IOU else None)
+        if iou < IRIS_MIN_IOU:
+            bad.append(f"{g.nom.iloc[k]} ({iou:.2f})")
+    if len(bad) * 2 > len(gl):
+        log(f"quartiers sans rapport avec les IRIS : contours Linternaute conservés")
+        return None
+    if bad:
+        log(f"quartiers sans rapport avec leurs IRIS, contour Linternaute conservé : {', '.join(bad)}")
+        good = unary_union([x for x in geoms if x is not None])
+        o = IRIS_FALLBACK_OPEN_M
+        geoms = [x if x is not None else q.difference(good).buffer(-o).buffer(o) for x, q in zip(geoms, gl.geometry)]
+    res = gpd.GeoDataFrame({"nom": g.nom.values}, geometry=geoms, crs=2154).to_crs(4326)
+    res = res[~res.geometry.is_empty]
+    res.attrs["source"] = "iris+linternaute" if bad else "iris"
+    return res
+
+
+QUARTIER_EDGE_TOL_M = 2   # deux bords de quartiers voisins à moins de 2 m l'un de l'autre : une seule limite
+
+
+def quartier_limits(g, commune_wgs):
+    """Limites entre quartiers voisins, chacune tracée une seule fois. Les contours des polygones répètent
+    chaque bord commun (une fois par voisin, décalés d'environ 1 m) et longent le bord de la commune :
+    tracés tels quels, les pointillés superposés se bouchent. Le contour extérieur de l'ensemble des
+    quartiers est écarté : il double la limite communale, ou s'en écarte (jusqu'à ~80 m) sans séparer
+    deux quartiers. Lignes fusionnées en tronçons continus (pointillés réguliers) ; GeoDataFrame en WGS84."""
+    tol = QUARTIER_EDGE_TOL_M
+    gl = g.to_crs(2154)
+    # ensemble des quartiers, interstices entre voisins comblés (sinon leurs bords passeraient pour extérieurs)
+    whole = unary_union(list(gl.geometry.buffer(tol))).buffer(-tol)
+    outer = unary_union([whole.boundary, gpd.GeoSeries([commune_wgs], crs=4326).to_crs(2154).iloc[0].boundary])
+    outer_zone = outer.buffer(tol)
+    bounds = list(gl.boundary)
+    zones = [b.buffer(tol) for b in bounds]
+    tree = STRtree(zones)
+    parts = []
+    for i, b in enumerate(bounds):
+        # bord déjà tracé par un quartier précédent (voisins seulement, via l'index spatial) ou extérieur
+        new = b.difference(outer_zone)
+        for j in tree.query(b):
+            if j < i and not new.is_empty:
+                new = new.difference(zones[j])
+        if not new.is_empty:
+            parts.append(new)
+    merged = unary_union(parts) if parts else None
+    flat = [l for l in getattr(merged, "geoms", [merged]) if l is not None and l.geom_type == "LineString"]
+    lines = linemerge(flat) if flat else None
+    geoms = [] if lines is None or lines.is_empty else [l for l in getattr(lines, "geoms", [lines])
+                                                         if l.length >= 3 * tol]  # débris de la différence
+    return gpd.GeoDataFrame(geometry=geoms, crs=2154).to_crs(4326)
+
+
+def write_quartiers(d, g, commune_wgs):
     (d / "quartiers.geojson").write_text(g.to_json(drop_id=True, ensure_ascii=False))
+    (d / "quartiers_limites.geojson").write_text(quartier_limits(g, commune_wgs).to_json(drop_id=True))
 
 
 def add_missing_quartiers(log=print):
-    """Ajoute quartiers.geojson aux communes construites sans (avant son introduction, ou
-    téléchargement échoué) ; renvoie le nombre de communes complétées."""
+    """(Re)calcule quartiers.geojson et quartiers_limites.geojson des communes construites sans, ou avec
+    un calcul antérieur (QUARTIERS_FORMAT), sans reconstruire les couches ; renvoie le nombre de communes
+    complétées. Un téléchargement échoué laisse la commune en l'état, réessayée au démarrage suivant."""
     n = 0
     for d in sorted(COMMUNES_DIR.iterdir()):
         meta_f = d / "meta.json"
-        if d.name.startswith(".") or not meta_f.exists() or (d / "quartiers.geojson").exists():
+        if d.name.startswith(".") or not meta_f.exists():
             continue
         meta = json.loads(meta_f.read_text())
-        g = quartiers(d.name, commune_geom(d.name).geometry, lambda m: log(f"{meta['nom']} : {m}"))
+        if meta.get("quartiers_format") == QUARTIERS_FORMAT:
+            continue
+        geom = commune_geom(d.name).geometry
+        g = quartiers(d.name, geom, lambda m: log(f"{meta['nom']} : {m}"))
         if g is None:
             continue
-        write_quartiers(d, g)
+        write_quartiers(d, g, geom)
         write_gz(d / "quartiers.geojson")
-        meta["quartiers"] = len(g)
+        write_gz(d / "quartiers_limites.geojson")
+        meta.update(quartiers=len(g), quartiers_format=QUARTIERS_FORMAT, quartiers_source=g.attrs.get("source"))
         meta_f.write_text(json.dumps(meta, ensure_ascii=False))
         write_gz(meta_f)
         n += 1
@@ -889,7 +1025,7 @@ def build_commune(code, log=print):
     commune.to_file(tmp / "commune.geojson", driver="GeoJSON")
     quart = quartiers(code, row.geometry, lambda m: log(f"{nom} : {m}"))
     if quart is not None:
-        write_quartiers(tmp, quart)
+        write_quartiers(tmp, quart, row.geometry)
     st = stations.to_crs(4326)
     gpd.GeoDataFrame({"zdc": st.zdc, "nom": st.nom, "lignes": st.lignes.map(" + ".join),
                       "networks": st.networks.map(",".join)},
@@ -917,6 +1053,8 @@ def build_commune(code, log=print):
         "built": time.strftime("%Y-%m-%d %H:%M"),
         "air_range": air_range(layers),
         "quartiers": None if quart is None else len(quart),  # None : pas de quartiers.geojson
+        "quartiers_format": None if quart is None else QUARTIERS_FORMAT,
+        "quartiers_source": None if quart is None else quart.attrs.get("source"),  # "iris" ou "linternaute"
     }
     (tmp / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
     compress_dir(tmp)
@@ -1088,12 +1226,13 @@ def _commune_files(code):
         "bruit_route": sorted((RAW / "bruitparif_route" / code).glob("*.png")),
         "bruit_fer": sorted((RAW / "bruitparif_fer" / code).glob("*.png")),
         "quartiers": [RAW / "quartiers" / f"{code}.json"],
+        "iris": [RAW / "iris" / f"{code}.json"],
     }
 
 
 COMMUNE_SOURCE_LABELS = {"osm": "Réseau de rues (OpenStreetMap)", "airparif": "Pollution de l'air (Airparif)",
                          "bruit_route": "Bruit routier (Bruitparif)", "bruit_fer": "Bruit ferroviaire (Bruitparif)",
-                         "quartiers": "Quartiers (Linternaute)"}
+                         "quartiers": "Quartiers (Linternaute)", "iris": "Contours IRIS (IGN)"}
 REFRESH_STATE = RAW / "refresh_state.json"  # communes restant à reconstruire d'une mise à jour interrompue
 
 

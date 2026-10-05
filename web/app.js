@@ -91,15 +91,16 @@ async function loadCommuneMeta(code, built) {
   const base = `data/communes/${code}/`;
   const [meta, outlineGeo] = await Promise.all([getJSON(base + "meta.json"), getJSON(base + "commune.geojson")]);
   // quartiers (Linternaute) : absents pour certaines communes, facultatifs pour l'affichage
-  const quartiersGeo = meta.quartiers ? await getJSON(base + "quartiers.geojson").catch(() => null) : null;
+  const [quartiersGeo, limitsGeo] = meta.quartiers ? await Promise.all(["quartiers", "quartiers_limites"].map(
+    (n) => getJSON(`${base}${n}.geojson`).catch(() => null))) : [null, null];
   const old = communes.get(code);
   if (old) removeCommuneLayers(old);
   communes.set(code, {
-    quartiers: quartiersLayer(quartiersGeo),
+    quartiers: quartiersLayer(quartiersGeo, limitsGeo),
     quartierAreas: (quartiersGeo?.features || []).map(quartierArea),
     code, meta, built, loaded: false, loading: null,
     outlineRings: outlineGeo.features.flatMap((f) => geoRings(f.geometry)),
-    outline: L.geoJSON(outlineGeo, { style: { color: "#1f2328", weight: 2, fill: false }, interactive: false }).addTo(map),
+    outline: L.geoJSON(outlineGeo, { style: { color: "#1f2328", weight: LIMIT_WEIGHT, fill: false }, interactive: false }).addTo(map),
     label: communeLabel(meta.nom, outlineGeo).addTo(map),
   });
 }
@@ -178,6 +179,7 @@ function showLoading(n) {
 // Les noms du fond de carte sont sous le voile et les contours de zone : on dessine les nôtres au-dessus.
 
 const LABEL_MIN_ZOOM = 12;  // en dessous, noms masqués (vue d'ensemble trop chargée)
+const LIMIT_WEIGHT = 2;  // épaisseur des limites de communes (trait plein) et de quartiers (pointillés)
 
 function communeLabel(nom, geo) {
   return L.marker(labelPoint(geo), {
@@ -191,11 +193,13 @@ function communeLabel(nom, geo) {
 
 const QUARTIER_LABEL_MIN_ZOOM = 14;
 
-function quartiersLayer(geo) {
+// limites tracées depuis quartiers_limites.geojson (chaque bord une seule fois : tracés deux fois, les
+// pointillés se bouchent) ; à défaut (données pas encore complétées), contours des quartiers
+function quartiersLayer(geo, limits) {
   const g = L.layerGroup();
   if (!geo) return g;
-  g.addLayer(L.geoJSON(geo, { pane: "quartiers", interactive: false,
-    style: { color: "#3d4148", weight: 1.2, opacity: 0.8, dashArray: "4 4", fill: false } }));
+  g.addLayer(L.geoJSON(limits || geo, { pane: "quartiers", interactive: false,
+    style: { color: "#3d4148", weight: LIMIT_WEIGHT, opacity: 0.8, dashArray: "6 5", fill: false } }));
   for (const f of geo.features) {
     g.addLayer(L.marker(labelPoint({ features: [f] }), {
       pane: "labels", interactive: false, keyboard: false,
@@ -211,7 +215,8 @@ function quartierArea(f) {
   const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
   const pts = polys.flatMap((p) => p[0]);
   const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
-  return { nom: f.properties.nom, polys, bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] };
+  return { nom: f.properties.nom, polys, bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)],
+           latlngs: polys.map((poly) => poly.map((ring) => ring.map(([lon, lat]) => [lat, lon]))) };
 }
 
 function quartierAt(c, latlng) {
@@ -225,10 +230,22 @@ function quartierAt(c, latlng) {
       }
       return inside;
     }));
-  return q ? q.nom : null;
+  return q || null;
+}
+
+// quartier sous la souris : voile clair et contour plein (seulement si les quartiers sont affichés)
+let quartierHi = null, hoverQuartier = null;
+
+function highlightQuartier(c, q) {
+  const key = q && state.showQuartiers ? `${c.code}|${q.nom}` : null;
+  if (key === hoverQuartier) return;
+  hoverQuartier = key;
+  if (!key) { map.removeLayer(quartierHi); return; }
+  quartierHi.setLatLngs(q.latlngs).addTo(map);
 }
 
 function showQuartiers() {
+  highlightQuartier(null, null);
   for (const c of communes.values()) {
     if (state.showQuartiers) c.quartiers.addTo(map); else map.removeLayer(c.quartiers);
   }
@@ -460,6 +477,8 @@ function initMap() {
   const quartiers = map.createPane("quartiers");  // limites des quartiers, entre zone et isochrone
   quartiers.style.zIndex = 415;
   quartiers.style.pointerEvents = "none";
+  quartierHi = L.polygon([], { pane: "quartiers", interactive: false,
+    color: "#1f2328", weight: LIMIT_WEIGHT + 1, fillColor: "#fff", fillOpacity: 0.25 });
   map.createPane("iso").style.zIndex = 420;
   const labels = map.createPane("labels");  // noms de communes, au-dessus des zones
   labels.style.zIndex = 630;
@@ -1111,6 +1130,7 @@ function highlightStation(zdc) {
 function hideHover() {
   hoverBox.hidden = true;
   highlightStation(null);
+  highlightQuartier(null, null);
 }
 
 // gare la plus rapide à atteindre depuis la cellule i pour un mode donné, réseaux cochés
@@ -1156,7 +1176,8 @@ function renderHover() {
   const how = { walk: "à pied", bike: "à vélo" };
   // en-tête : commune et quartier, puis la gare retenue pour le mode sélectionné, ou l'absence de gare dans le seuil
   const quartier = quartierAt(c, e.latlng);
-  let html = `<div class="place">${c.meta.nom}${quartier ? ` · <strong>${quartier}</strong>` : ""}</div>`;
+  highlightQuartier(c, quartier);
+  let html = `<div class="place">${c.meta.nom}${quartier ? ` · <strong>${quartier.nom}</strong>` : ""}</div>`;
   html += reached
     ? `<strong>${sel.st.nom}</strong><br><span class="muted">${sel.st.lignes.join(" + ")}</span>`
     : `<span class="ko">Aucune gare à ${limit} min ${how[mode]} ou moins</span>`;
