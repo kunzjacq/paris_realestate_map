@@ -216,7 +216,10 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
   de l'IGN. Un quartier qui ne correspond pas à ses IRIS (surface commune / surface réunie < 0,6 :
   bandes de Seine à Paris, un quartier de Franconville) garde son contour Linternaute, privé des quartiers
   voisins ; si c'est le cas de la plupart des quartiers d'une commune, elle garde ceux de Linternaute
-  (`quartiers_source` dans `meta.json`). Certaines petites communes n'ont pas de découpage ; à
+  (`quartiers_source` dans `meta.json`). Quelques quartiers gardent des bandes étroites (20-30 m) le long
+  d'une rivière : ce sont des quais rattachés par l'INSEE à un autre IRIS que les maisons qui les bordent
+  (Quai de l'Artois à La Prairie de Nogent, Quai Gallieni à Fourchette-Polangis), conservés tels quels.
+  Certaines petites communes n'ont pas de découpage ; à
   Le Chesnay-Rocquencourt et Saint-Denis, seuls ~60 % et ~78 % de la commune sont couverts. Un échec de
   téléchargement n'empêche pas la construction : les quartiers manquent et le serveur réessaie à son
   démarrage suivant. Après une modification de leur calcul (`QUARTIERS_FORMAT` dans `pipeline.py`), les
