@@ -207,6 +207,10 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
   moins de 10 s. Une réponse tronquée (délai ou mémoire dépassés côté serveur, signalés par `remark` malgré
   un HTTP 200) ou sans aucune voie n'est jamais mise en cache. Une dalle de Paris peut peser 34 Mo. Une fois
   les dalles en cache, une commune voisine ne demande plus rien à Overpass.
+- Fond de carte : le serveur de tuiles de l'IGN renvoie parfois une erreur 404 pour une tuile qui existe,
+  que le navigateur garde en cache 21 jours (`Cache-Control: max-age=1814400`). L'application redemande
+  une tuile en échec sans le cache (jusqu'à 3 essais, après 1, 3 puis 9 s), ce qui remplace aussi
+  l'erreur mémorisée.
 - En WCS 2.0, le GeoServer d'Airparif échoue sur certaines emprises. Le pipeline utilise donc
   WCS 1.0 et vérifie qu'il reçoit bien un GeoTIFF.
 - Quartiers : endpoint interne et non documenté de Linternaute, qui peut changer ; licence de réutilisation

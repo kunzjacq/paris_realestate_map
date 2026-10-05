@@ -453,6 +453,25 @@ function fitTo(codes) {
 
 // ------------------------------------------------------------------ carte
 
+// Le serveur de tuiles de l'IGN renvoie de temps en temps une erreur 404 pour une tuile qui existe, avec
+// « Cache-Control: max-age=1814400 » : le navigateur garde l'erreur 21 jours et la tuile manque à chaque
+// visite. Une tuile en échec est redemandée sans le cache (ce qui remplace l'erreur mémorisée), puis
+// rechargée ; jusqu'à TILE_RETRIES essais, espacés de 1, 3 puis 9 s.
+const TILE_RETRIES = 3;
+
+function retryTiles(layer) {
+  layer.on("tileerror", ({ tile }) => {
+    const n = (tile.retries || 0) + 1, src = tile.src.replace(/[?&]_essai=\d+$/, "");
+    if (n > TILE_RETRIES) return;
+    tile.retries = n;
+    const busted = `${src}${src.includes("?") ? "&" : "?"}_essai=${n}`;  // adresse hors du cache
+    setTimeout(() => fetch(src, { cache: "reload" })
+      .then((r) => { tile.src = r.ok ? src : busted; })  // échec : nouvel événement tileerror, essai suivant
+      .catch(() => { tile.src = busted; }),  // requête refusée (CORS) : contournement du cache par l'adresse
+    1000 * 3 ** (n - 1));
+  });
+}
+
 function initMap() {
   map = L.map("map", { zoomControl: true }).setView([48.83, 2.48], 13);
   const wmts = (layer, fmtImg) =>
@@ -465,6 +484,7 @@ function initMap() {
     "OpenStreetMap": L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19, attribution: "© OpenStreetMap" }),
   };
+  Object.values(bases).forEach(retryTiles);
   bases["Plan IGN"].addTo(map);
   L.control.layers(bases, null, { position: "topright" }).addTo(map);
   L.control.scale({ imperial: false }).addTo(map);
