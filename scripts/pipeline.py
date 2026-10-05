@@ -71,10 +71,11 @@ GRID_MARGIN_M = 300              # marge de la grille autour de la commune
 CELL_M = 15.0                    # taille de cellule en mètres Web Mercator (~10 m réels à 48,8°N)
 MAX_ACCESS_DIST_M = 400          # au-delà, un accès est jugé mal rattaché à la gare
 AIR_YEAR = 2025
-DATA_FORMAT = 10                 # à incrémenter quand le contenu des données change : le serveur reconstruit les anciennes
+DATA_FORMAT = 11                 # à incrémenter quand le contenu des données change : le serveur reconstruit les anciennes
 AIR_POLLUTANTS = ["no2", "pm25", "pm10"]
 # réseaux ferrés pris en compte pour le temps de marche : mode IDFM -> clé utilisée dans les données
 NETWORKS = {"RER": "rer", "TRAIN": "transilien", "METRO": "metro"}
+GPE_LINES = {"15", "16", "17", "18"}  # Grand Paris Express : lignes de métro en projet (réseaux « gpeAAAAMMJJ »)
 NO_STATION = 65535               # indice de gare d'une cellule sans gare atteignable (uint16)
 TRAVEL_MODES = ["walk", "bike"]
 MODE_NAMES = {"walk": "à pied", "bike": "à vélo"}
@@ -109,6 +110,7 @@ SOURCES = {
     "bruitparif": "Bruitparif / Airparif, cartographie air-bruit 2024 (9 classes, toutes voies)",
     "route": "Bruitparif, carte stratégique de bruit E4 consolidée, bruit routier Lden en 8 classes (MapProxy raster.bruitparif.fr)",
     "lden": "Bruit ferroviaire : Bruitparif, CSB E4 consolidée (8 classes), complétée par la DRIEAT (CSB E4 2022, valeur la plus élevée retenue)",
+    "gpe": "Grand Paris Express : gares des lignes 15 à 18 et dates de mise en service estimées (IDFM, projets_arrets_idf et projets_lignes_idf)",
     "walk": f"Temps à pied : plus court chemin sur le réseau OpenStreetMap jusqu'aux entrées des gares (IDFM), {WALK_SPEED_KMH} km/h",
     "bike": f"Temps à vélo : réseau OpenStreetMap, sens uniques respectés (sauf contresens cyclables), {BIKE_SPEED_KMH} km/h ({BIKE_SLOW_KMH} km/h sur voies piétonnes)",
 }
@@ -467,6 +469,46 @@ def idfm_tables():
     return gares, acc
 
 
+def gpe_key(date):
+    """Réseau des gares du Grand Paris Express ouvrant à cette date (« gpe20271231 »)."""
+    return "gpe" + date.replace("-", "")
+
+
+def gpe_stations():
+    """Gares des lignes 15 à 18 du Grand Paris Express, avec leur date de mise en service estimée par IDFM
+    (jeux « projets_arrets_idf » et « projets_lignes_idf »). La date d'un arrêt est celle de son opération et de
+    sa phase (une même opération regroupe des phases de dates différentes) ; une gare desservie par plusieurs
+    lignes ouvre avec la première. GeoDataFrame (zdc, nom, lignes, networks, date, geometry) en Lambert 93 ;
+    networks : le réseau de sa date (gpe_key), pour que l'application combine les gares ouvertes à une date
+    donnée comme elle combine RER, Transilien et métro."""
+    arrets = gpd.read_file(cached(RAW / "idfm_projets_arrets.geojson", lambda: http_get(
+        f"{IDFM_API}/projets_arrets_idf/exports/geojson").content))
+    lignes = gpd.read_file(cached(RAW / "idfm_projets_lignes.geojson", lambda: http_get(
+        f"{IDFM_API}/projets_lignes_idf/exports/geojson").content))
+    cols = ["zdc", "nom", "lignes", "networks", "date", "geometry"]
+    arrets = arrets[(arrets["mode"] == "métro") & arrets.indice.isin(GPE_LINES)]
+    lignes = lignes[(lignes["mode"] == "métro") & lignes.indice.isin(GPE_LINES) & lignes.mes_estime.notna()]
+    dates = (pd.DataFrame({"id_operati": lignes.id_operati, "phase": lignes.phase,
+                           "date": pd.to_datetime(lignes.mes_estime, utc=True).dt.strftime("%Y-%m-%d")})
+             .groupby(["id_operati", "phase"]).date.min())
+    arrets = arrets.join(dates, on=["id_operati", "phase"])
+    arrets = arrets[arrets.date.notna()].to_crs(2154)  # opération sans date (Versailles phase 4, déjà en phase 3)
+    if arrets.empty:
+        return gpd.GeoDataFrame(columns=cols, geometry="geometry", crs=2154)
+    norm = lambda n: re.sub(r"[^a-z0-9]", "", n.lower().translate(str.maketrans("àâäéèêëîïôöùûüç", "aaaeeeeiioouuuc")))
+    rows = []
+    for key, grp in arrets.groupby(arrets.nom_arret.map(norm)):
+        first = grp.groupby("indice").date.min()  # ouverture de chaque ligne à cette gare
+        date = first.min()
+        rows.append({
+            "zdc": f"gpe-{key}", "nom": grp.nom_arret.iloc[0],
+            "lignes": [f"Métro {l} ({first[l][:4]})" for l in sorted(first.index, key=int)],
+            "networks": [gpe_key(date)], "date": date,
+            "geometry": unary_union(list(grp.geometry)).centroid,
+        })
+    return gpd.GeoDataFrame(rows, crs=2154)
+
+
 def line_label(res_com):
     """« TRAIN P » -> « Transilien P », « METRO 7bis » -> « Métro 7bis »."""
     return res_com.replace("TRAIN ", "Transilien ").replace("METRO ", "Métro ")
@@ -480,6 +522,8 @@ def line_order(label):
 
 
 def stations_near(commune_l93):
+    """Gares à portée de la commune : gares IDFM en service (avec leurs accès), puis gares du Grand Paris
+    Express en projet (sans accès connus : on part du point de la gare)."""
     gares, acc = idfm_tables()
     zone = commune_l93.buffer(STATION_SEARCH_RADIUS_M)
     gares = gares[gares.within(zone)]
@@ -495,10 +539,16 @@ def stations_near(commune_l93):
             "zdas": sorted(set(grp.id_ref_zda.astype(str))),
             "geometry": unary_union(list(grp.geometry)).centroid,
         })
+    gpe = gpe_stations()
+    for r in gpe[gpe.within(zone)].itertuples():
+        stations.append({"zdc": r.zdc, "nom": r.nom, "lignes": r.lignes, "networks": r.networks, "zdas": [],
+                         "date": r.date, "geometry": r.geometry})
     if not stations:
-        return gpd.GeoDataFrame(columns=["zdc", "nom", "lignes", "networks", "zdas", "geometry"], geometry="geometry", crs=2154), \
+        return gpd.GeoDataFrame(columns=["zdc", "nom", "lignes", "networks", "zdas", "date", "geometry"], geometry="geometry", crs=2154), \
             gpd.GeoDataFrame(columns=["station", "nom_acces", "geometry"], geometry="geometry", crs=2154)
     stations = gpd.GeoDataFrame(stations, crs=2154).sort_values("nom").reset_index(drop=True)
+    # date d'ouverture (gares du Grand Paris Express), None pour les gares en service
+    stations["date"] = [d if isinstance(d, str) else None for d in stations.get("date", [None] * len(stations))]
 
     access_rows = []
     for i, st in stations.iterrows():
@@ -693,6 +743,13 @@ def build_graphs(nodes, ways):
     return x, y, graphs
 
 
+def station_networks(stations):
+    """Réseaux pour lesquels calculer les temps : RER, Transilien, métro (toujours), puis les dates d'ouverture
+    du Grand Paris Express qui ont une gare à portée."""
+    gpe = sorted({n for nets in stations.networks for n in nets if n.startswith("gpe")}) if len(stations) else []
+    return list(NETWORKS.values()) + gpe
+
+
 def travel_times(grid, stations, accesses, x, y, graphs, log):
     """Temps (s, uint16, 65535 = hors d'atteinte) et gare (uint8) par cellule, par mode et par réseau."""
     n = len(x)
@@ -712,7 +769,7 @@ def travel_times(grid, stations, accesses, x, y, graphs, log):
         main = np.flatnonzero(used & (label == np.bincount(label[used]).argmax()))
         tree = cKDTree(np.column_stack([x[main], y[main]]))
         approach = (WALK_SPEED_KMH if mode == "walk" else BIKE_SLOW_KMH) / 3.6  # du point à la voie la plus proche
-        for net in NETWORKS.values():
+        for net in station_networks(stations):
             sel = acc[acc.station.map(lambda si: net in stations.networks.iloc[si])]
             t_cells = np.full(grid.shape, 65535, "uint16")
             s_cells = np.full(grid.shape, NO_STATION, "uint16")
@@ -1056,9 +1113,12 @@ def build_commune(code, log=print):
         "merc": {"left": grid.left, "top": grid.top, "cell": CELL_M},
         "row_cell_area_m2": grid.row_cell_area_m2(),
         "layers": meta_layers,
-        "stations": [{"zdc": z, "nom": n, "lignes": list(l), "networks": list(k)}
-                     for z, n, l, k in zip(stations.zdc, stations.nom, stations.lignes, stations.networks)],
+        "stations": [{"zdc": z, "nom": n, "lignes": list(l), "networks": list(k), **({"date": d} if isinstance(d, str) else {})}
+                     for z, n, l, k, d in zip(stations.zdc, stations.nom, stations.lignes, stations.networks,
+                                              stations.date)],
         "networks": list(NETWORKS.values()),
+        # dates d'ouverture du Grand Paris Express ayant une gare à portée (couches <mode>_gpeAAAAMMJJ)
+        "gpe": sorted({d for d in stations.date if isinstance(d, str)}),
         "modes": TRAVEL_MODES,
         "bike_speed_kmh": BIKE_SPEED_KMH,
         "walk_speed_kmh": WALK_SPEED_KMH,
@@ -1087,6 +1147,15 @@ def build_commune(code, log=print):
 # --------------------------------------------------------------------------- index et couches globales
 
 _index_lock = threading.Lock()
+
+
+def gpe_dates():
+    """Dates d'ouverture du Grand Paris Express (curseur de l'application) ; vide si les données manquent."""
+    try:
+        return sorted(set(gpe_stations().date))
+    except Exception as e:
+        print(f"gares du Grand Paris Express indisponibles ({e})", flush=True)
+        return []
 
 
 def update_index():
@@ -1125,7 +1194,8 @@ def update_index():
             write_gz(GLOBAL_DIR / f"{name}.geojson")
         tmp = WEB_DATA / f"index.json{suffix}"
         tmp.write_text(json.dumps(
-            {"communes": communes, "sources": SOURCES, "durations": DURATIONS_MIN, "air_year": AIR_YEAR},
+            {"communes": communes, "sources": SOURCES, "durations": DURATIONS_MIN, "air_year": AIR_YEAR,
+             "gpe": gpe_dates()},
             ensure_ascii=False))
         os.replace(tmp, WEB_DATA / "index.json")
 
@@ -1185,7 +1255,7 @@ def zone_stats(codes, q):
     """Surfaces (m²) par commune : totale, retenue, et respectant chaque critère pris seul.
     Mêmes règles que l'application (web/app.js, computeCommune)."""
     out = {}
-    nets = [n for n in q.get("networks", []) if n in NETWORKS.values()]
+    nets = [n for n in q.get("networks", []) if n in NETWORKS.values() or re.fullmatch(r"gpe\d{8}", n)]
     mode = q.get("mode", "walk")
     limit = q.get("walk")                      # minutes, ou None sans filtre de temps
     limit_s = limit * 60 + 29 if limit is not None else 65535
@@ -1286,6 +1356,8 @@ def _global_sources():
             RAW / "idfm_acces.csv", RAW / "idfm_relations_acces.csv"]
     return [
         ("idfm", "Gares, stations et accès (IDFM)", idfm),
+        ("gpe", "Gares du Grand Paris Express en projet (IDFM)",
+         [RAW / "idfm_projets_arrets.geojson", RAW / "idfm_projets_lignes.geojson"]),
         ("communes", "Contours des communes (geo.api.gouv.fr)", [RAW / "idf_communes.gpkg"]),
         ("airbruit", "Indice air-bruit (Bruitparif)", [RAW / "airbruit2024.zip"]),
         ("drieat", "Bruit ferroviaire (DRIEAT)", [RAW / "drieat_index.json"] + sorted((RAW / "drieat").glob("*.gpkg"))),
@@ -1381,9 +1453,10 @@ def refresh_stale(log=print, on_commune=None, max_age_days=MAX_AGE_DAYS):
     REFRESH_BEFORE = time.time() - max_age_days * 86400
     errors = {}
     try:
-        if any(s["stale"] for s in report["sources"] if s["key"] in ("idfm", "communes", "airbruit", "drieat")):
+        if any(s["stale"] for s in report["sources"] if s["key"] in ("idfm", "gpe", "communes", "airbruit", "drieat")):
             log("mise à jour : gares et accès IDFM")
             idfm_tables()
+            gpe_stations()
             log("mise à jour : contours des communes")
             idf_communes()
             _idf_cache = None

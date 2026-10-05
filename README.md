@@ -31,7 +31,7 @@ l'autre (navigateur), comme la dernière vue de la carte.
 |---|---|
 | Aller à | commune chargée (complétion, « st » vaut « saint »), puis quartier dans la liste déroulante : la carte se centre sur la commune dès qu'elle est choisie, puis sur le quartier |
 | Communes | liste repliable (clic sur le titre) : case pour inclure ou non la commune, centrage, retrait ; recherche, « Ajouter les communes visibles », suivi des constructions. « ⚠ route » / « ⚠ fer » : bruit connu sur moins de 90 % de la commune |
-| Trajet jusqu'à une gare | filtre activable, à pied ou à vélo, réseaux RER / Transilien / Métro, seuil de 3 à 20 min (pas de 1 min), propre à chaque mode : changer de mode reprend le seuil de ce mode |
+| Trajet jusqu'à une gare | filtre activable, à pied ou à vélo, réseaux RER / Transilien / Métro, seuil de 3 à 20 min (pas de 1 min), propre à chaque mode : changer de mode reprend le seuil de ce mode. Option « Grand Paris Express (lignes 15 à 18) » : un curseur sur les dates d'ouverture estimées (fin 2026 à fin 2031) ne retient que les gares ouvertes d'ici la date choisie |
 | Pollution de l'air | un curseur par polluant (NO₂, PM2.5, PM10, moyennes annuelles), repères OMS et UE 2030 |
 | Bruit des transports | Lden routier et ferroviaire maximal (de < 75 à < 45 dB), indice global Bruitparif (3 niveaux) |
 | Affichage | couche de contexte (temps de trajet, polluants, bruits), zone retenue, contour de la zone atteignable, quartiers |
@@ -48,7 +48,8 @@ l'autre (navigateur), comme la dernière vue de la carte.
   celles des communes, à partir du zoom 13 ; noms en italique à partir du zoom 15 ; le quartier sous la souris
   est éclairci et cerné d'un trait plein ; l'encadré de survol indique la commune et le quartier du point.
 - **Gares** : seules les 3 plus proches de la souris sont affichées, avec leurs accès et leur nom (rose : RER,
-  bleu : Transilien, jaune : métro) ; la gare retenue pour le point survolé est agrandie.
+  bleu : Transilien, jaune : métro, vert : Grand Paris Express, avec l'année d'ouverture de chaque ligne) ; la
+  gare retenue pour le point survolé est agrandie.
 - **Encadré en bas à droite** (point sous la souris, pointeur en croix) : gare la plus rapide à atteindre,
   temps à pied et à vélo (arrondis à la minute), bruit routier, ferroviaire et indice global, NO₂ / PM2.5 /
   PM10 (pastille verte sous la recommandation OMS, jaune jusqu'à la valeur limite UE 2030, rouge au-delà),
@@ -122,7 +123,7 @@ Exception : les quartiers d'un calcul antérieur (`QUARTIERS_FORMAT`) ne sont re
 ### Âge des données et mise à jour
 
 Chaque fichier téléchargé (`data/raw/`) est daté de son téléchargement. `GET /api/freshness` les regroupe par
-source : gares et accès IDFM, contours des communes, indice air-bruit, bruit DRIEAT (communs à toutes les
+source : gares et accès IDFM, gares du Grand Paris Express en projet, contours des communes, indice air-bruit, bruit DRIEAT (communs à toutes les
 communes), réseau OSM, pollution Airparif, bruit routier et ferroviaire Bruitparif, quartiers Linternaute,
 contours IRIS de l'IGN (propres à chaque commune). Les tuiles du fond de carte ont leur propre durée de vie
 (voir « Fichiers servis »).
@@ -191,6 +192,7 @@ taille de cellule…
 |---|---|---|
 | Temps à pied jusqu'à une gare | OpenStreetMap (Overpass, dalles en cache dans `data/raw/osm/`) + entrées de gares et bouches de métro IDFM | plus court chemin sur le réseau piéton, 4,5 km/h, depuis chaque entrée ; temps réel par cellule (s) |
 | Temps à vélo jusqu'à une gare | OpenStreetMap | plus court chemin vers la gare, sens uniques respectés sauf contresens cyclables, 15 km/h (6 km/h sur voies piétonnes), escaliers et voies interdites exclus |
+| Gares du Grand Paris Express (option) | IDFM, `projets_arrets_idf` et `projets_lignes_idf` (cache `data/raw/idfm_projets_*.geojson`) | gares des lignes 15 à 18 et date de mise en service estimée de leur tronçon (opération et phase) ; une gare desservie par plusieurs lignes ouvre avec la première ; pas d'accès connus : temps calculés depuis le point de la gare. Un jeu de couches de temps par date d'ouverture ayant une gare à portée de la commune (`walk_gpeAAAAMMJJ`…), combiné dans l'application selon la date choisie |
 | Gares et stations | IDFM, `emplacement-des-gares-idf` | gares RER (A–E), Transilien (H, J, K, L, N, P, R, U, V) et stations de métro (1 à 14, 3bis, 7bis) à moins de 4,5 km de la commune ; temps calculé par réseau, combiné dans l'application selon les réseaux cochés |
 | NO₂, PM2.5, PM10 | Airparif, WCS 1.0 `namek.airparif.fr` | moyennes annuelles 2025 modélisées, 6,25 m |
 | Bruit routier | Bruitparif, carte stratégique de bruit E4 consolidée (`CSB4_w4echConso_Route_A_Lden`, MapProxy `raster.bruitparif.fr`) | Lden en 8 classes (< 45, 45-50, …, ≥ 75 dB), toutes rues ; images WMS reconverties en classes par leur couleur |
@@ -228,6 +230,11 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
   une tuile en échec sans le cache (jusqu'à 3 essais, après 1, 3 puis 9 s). Le cache des tuiles n'a pas
   de taille maximale : ~70 Ko par tuile, soit ~1 Go pour les communes chargées jusqu'au zoom 16, bien plus
   aux zooms supérieurs (~60 Go au zoom 19 si tout était consulté).
+- Grand Paris Express : les dates sont les estimations publiées par IDFM, le plus souvent à l'année (« fin
+  2027 ») ; elles changent au fil des chantiers et sont retéléchargées avec les autres données de plus de 6
+  mois. Les gares en correspondance avec une gare existante apparaissent deux fois (gare actuelle et gare du
+  Grand Paris Express). Les lignes existantes prolongées depuis (14, 11, 4, RER E) sont déjà dans les gares en
+  service d'IDFM.
 - En WCS 2.0, le GeoServer d'Airparif échoue sur certaines emprises. Le pipeline utilise donc
   WCS 1.0 et vérifie qu'il reçoit bien un GeoTIFF.
 - Quartiers : endpoint interne et non documenté de Linternaute, qui peut changer ; licence de réutilisation

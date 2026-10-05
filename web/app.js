@@ -19,12 +19,12 @@ const COLORS = {
 };
 const EMPTY_PNG = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
 const STORAGE_KEY = "immo_map.state.v3";
-const NETWORK_COLORS = { rer: "#c2185b", transilien: "#1565c0", metro: "#e0a100" };
+const NETWORK_COLORS = { rer: "#c2185b", transilien: "#1565c0", metro: "#e0a100", gpe: "#00897b" };
 const NO_STATION = 65535;  // indice de gare d'une cellule sans gare atteignable
-// couleur d'une gare : RER, sinon Transilien, sinon métro
-const stationColor = (nets) => NETWORK_COLORS[["rer", "transilien", "metro"].find((n) => nets.includes(n)) || "rer"];
+// couleur d'une gare : RER, sinon Transilien, sinon métro, sinon Grand Paris Express (réseaux « gpeAAAAMMJJ »)
+const stationColor = (nets) => NETWORK_COLORS[["rer", "transilien", "metro", "gpe"].find((n) => nets.includes(n)) || "rer"];
 const NEAR_STATIONS = 3;  // gares affichées : les plus proches de la souris
-const DATA_FORMAT = 10;  // doit suivre DATA_FORMAT de scripts/pipeline.py
+const DATA_FORMAT = 11;  // doit suivre DATA_FORMAT de scripts/pipeline.py
 const MODE_LABELS = { walk: "À pied", bike: "À vélo" };
 const UNREACHED = 65535;  // temps (s) d'une cellule hors d'atteinte
 // classe Lden (borne basse ; 40 = moins de 45 dB ; 0 = non renseigné) -> libellé
@@ -42,6 +42,8 @@ const state = {
   walkFilter: true,    // false : le temps de trajet n'est pas un critère
   travelMode: "walk",  // "walk" ou "bike"
   networks: { rer: true, transilien: true, metro: true },  // réseaux pris en compte pour le temps de trajet
+  gpe: false,          // gares du Grand Paris Express en projet prises en compte
+  gpeDate: null,       // … si elles ouvrent au plus tard à cette date (AAAA-MM-JJ, parmi index.gpe)
   air: {},             // seuils en µg/m³ ; absent = pas de filtre
   bpNoise: 3,
   ldenRoute: 999,
@@ -321,7 +323,12 @@ function drawUnloadedMask() {
 const boundsOf = (c) => L.latLngBounds(c.meta.bounds);
 const loadedCommunes = () => [...communes.values()].filter((c) => c.loaded);
 
-const selectedNetworks = () => Object.keys(state.networks).filter((n) => state.networks[n]);
+// réseaux pris en compte : réseaux cochés, plus une couche par date d'ouverture du Grand Paris Express
+// atteinte à la date choisie (gares ouvertes au plus tard à cette date)
+const gpeKey = (date) => "gpe" + date.replaceAll("-", "");
+const gpeNetworks = () => !state.gpe || !index?.gpe?.length ? []
+  : index.gpe.filter((d) => d <= state.gpeDate).map(gpeKey);
+const selectedNetworks = () => [...Object.keys(state.networks).filter((n) => state.networks[n]), ...gpeNetworks()];
 
 // Temps de trajet en secondes (mode choisi) et gare la plus proche, tous réseaux choisis confondus
 function combineWalk(c) {
@@ -390,6 +397,7 @@ async function syncIndex() {
   }
   renderCommuneList();
   buildAirSliders();
+  buildGpeSlider();
   renderSources();
   drawUnloadedMask();
   update({ context: true });
@@ -1356,13 +1364,18 @@ function initControls() {
   for (const net of Object.keys(state.networks)) {
     const box = $(`net-${net}`);
     box.checked = state.networks[net];
-    box.addEventListener("change", () => {
-      state.networks[net] = box.checked;
-      for (const c of loadedCommunes()) combineWalk(c);
-      showNearStations(hoverEvt && hoverEvt.latlng);
-      update({ context: state.context === "walk" });
-    });
+    box.addEventListener("change", () => { state.networks[net] = box.checked; networksChanged(); });
   }
+  const gpeBox = $("gpe-on"), gpeRange = $("gpe-date");
+  gpeBox.checked = state.gpe;
+  gpeBox.addEventListener("change", () => { state.gpe = gpeBox.checked; showGpe(); networksChanged(); });
+  gpeRange.addEventListener("input", () => {
+    state.gpeDate = index.gpe[+gpeRange.value]; showGpe();
+    for (const c of loadedCommunes()) combineWalk(c);
+    showNearStations(hoverEvt && hoverEvt.latlng);
+    scheduleUpdate();
+  });
+  gpeRange.addEventListener("change", () => update({ context: state.context === "walk" }));
   showWalk();
 
   const bind = (id, key, ctx = false, prop = "value") => {
@@ -1447,6 +1460,41 @@ function initGoto() {
     map.fitBounds([[y0, x0], [y1, x1]], { padding: [20, 20] });
   });
   setQuartiers(null);
+}
+
+// réseaux ou gares du Grand Paris Express changés : temps de trajet recombinés
+function networksChanged() {
+  for (const c of loadedCommunes()) combineWalk(c);
+  showNearStations(hoverEvt && hoverEvt.latlng);
+  update({ context: state.context === "walk" });
+}
+
+// ------------------------------------------------------------------ Grand Paris Express
+// curseur sur les dates d'ouverture estimées par IDFM (index.gpe) : gares ouvertes au plus tard à la date choisie
+
+const fmtGpeDate = (d) => d.endsWith("-12-31") ? `fin ${d.slice(0, 4)}`
+  : new Date(d).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+
+function buildGpeSlider() {
+  const dates = index.gpe || [], range = $("gpe-date");
+  $("gpe-box").hidden = !dates.length;
+  if (!dates.length) return;
+  // date mémorisée, sinon la plus proche avant elle, sinon la dernière (toutes les lignes)
+  const k = dates.filter((d) => !state.gpeDate || d <= state.gpeDate).length - 1;
+  state.gpeDate = dates[k >= 0 && state.gpeDate ? k : dates.length - 1];
+  range.max = dates.length - 1;
+  range.value = dates.indexOf(state.gpeDate);
+  $("gpe-ticks").innerHTML = dates.map((d, i) =>
+    `<span style="left:${dates.length > 1 ? (100 * i) / (dates.length - 1) : 0}%">${d.slice(0, 4)}</span>`).join("");
+  showGpe();
+}
+
+function showGpe() {
+  const n = (index.gpe || []).filter((d) => d <= state.gpeDate).length;
+  $("gpe-out").textContent = state.gpe ? `ouvertes d'ici ${fmtGpeDate(state.gpeDate)}` : "";
+  $("gpe-controls").classList.toggle("off", !state.gpe);
+  $("gpe-date").disabled = !state.gpe;
+  $("gpe-date").title = `${n} date${n > 1 ? "s" : ""} d'ouverture sur ${(index.gpe || []).length}`;
 }
 
 // ------------------------------------------------------------------ menu : largeur et masquage
