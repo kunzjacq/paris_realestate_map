@@ -1106,7 +1106,7 @@ let hoverBox, hoverEvt = null, hoverFrame = 0, hoverStation = null;
 let stationMarkers = new Map();  // zdc -> marqueur
 
 function initHover() {
-  // encadré d'information fixe, dans le coin supérieur droit de la carte (sous le choix du fond de carte)
+  // encadré d'information fixe, dans le coin inférieur droit de la carte (au-dessus des crédits)
   hoverBox = L.DomUtil.create("div", "hover-box", map.getContainer());
   hoverBox.hidden = true;
   map.on("mousemove", (e) => {

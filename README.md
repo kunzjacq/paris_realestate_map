@@ -48,7 +48,7 @@ l'autre (navigateur), comme la dernière vue de la carte.
   partir du zoom 14 ; le quartier sous la souris est éclairci et cerné d'un trait plein ; l'encadré de survol indique la commune et le quartier du point.
 - **Gares** : seules les 3 plus proches de la souris sont affichées, avec leurs accès et leur nom (rose : RER,
   bleu : Transilien, jaune : métro) ; la gare retenue pour le point survolé est agrandie.
-- **Encadré en haut à droite** (point sous la souris, pointeur en croix) : gare la plus rapide à atteindre,
+- **Encadré en bas à droite** (point sous la souris, pointeur en croix) : gare la plus rapide à atteindre,
   temps à pied et à vélo (arrondis à la minute), bruit routier, ferroviaire et indice global, NO₂ / PM2.5 /
   PM10 (pastille verte sous la recommandation OMS, jaune jusqu'à la valeur limite UE 2030, rouge au-delà),
   et la liste des raisons d'exclusion quand le point est hors de la zone retenue.
