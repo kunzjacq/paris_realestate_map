@@ -140,7 +140,15 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self.write_body(body)
+
+    def write_body(self, body):
+        """Envoie body ; une requête abandonnée par le navigateur (tuile sortie de la vue pendant un
+        déplacement de la carte, page quittée) a fermé la connexion : rien à faire."""
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def send_gzip_if_available(self, path):
         """Sert path.gz (Content-Encoding: gzip) si le navigateur l'accepte et s'il est à jour."""
@@ -165,7 +173,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Last-Modified", last_modified)
         self.end_headers()
-        self.wfile.write(body)
+        self.write_body(body)
         return True
 
     def send_tile(self, path):
@@ -186,7 +194,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "max-age=604800")  # 7 jours ; le cache disque fait le reste
         self.end_headers()
-        self.wfile.write(body)
+        self.write_body(body)
 
     def do_GET(self):
         u = urlparse(self.path)
