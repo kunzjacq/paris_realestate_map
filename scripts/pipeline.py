@@ -71,7 +71,12 @@ GRID_MARGIN_M = 300              # marge de la grille autour de la commune
 CELL_M = 15.0                    # taille de cellule en mètres Web Mercator (~10 m réels à 48,8°N)
 MAX_ACCESS_DIST_M = 400          # au-delà, un accès est jugé mal rattaché à la gare
 AIR_YEAR = 2025
-DATA_FORMAT = 12                 # à incrémenter quand le contenu des données change : le serveur reconstruit les anciennes
+# Formats des données, par groupe de couches : à incrémenter quand le calcul d'un groupe change. Le serveur
+# reconstruit les communes concernées, en ne recalculant que les groupes périmés (les autres couches sont
+# reprises de la version précédente). grille : contour de la commune et grille (tout est recalculé) ;
+# transport : temps de trajet et gares ; air : Airparif ; bruit : Bruitparif et DRIEAT.
+FORMATS = {"grille": 9, "transport": 12, "air": 9, "bruit": 9}
+DATA_FORMAT = max(FORMATS.values())  # format global (meta.json, index.json ; DATA_FORMAT de web/app.js)
 AIR_POLLUTANTS = ["no2", "pm25", "pm10"]
 # réseaux ferrés pris en compte pour le temps de marche : mode IDFM -> clé utilisée dans les données
 NETWORKS = {"RER": "rer", "TRAIN": "transilien", "METRO": "metro"}
@@ -678,7 +683,9 @@ def load_osm(bounds_wgs, log):
     tiles = osm_tiles(bounds_wgs)
     nodes, ways = {}, {}
     for k, (i, j) in enumerate(tiles):
-        log(f"réseau OSM : dalle {k + 1}/{len(tiles)}")
+        f = RAW / "osm" / f"{i}_{j}.json"
+        log(f"réseau OSM : dalle {k + 1}/{len(tiles)} "
+            + ("(en cache)" if f.exists() and not is_stale(f) else "(téléchargement Overpass)"))
         for el in osm_tile(i, j, log)["elements"]:
             if el["type"] == "node":
                 nodes[el["id"]] = (el["lon"], el["lat"])
@@ -1069,85 +1076,147 @@ def bruitparif_lden(grid, code, source, log):
 
 # --------------------------------------------------------------------------- construction d'une commune
 
-def build_commune(code, log=print):
+NOISE_LAYERS = ["bp_noise", "bp_air", "lden_route", "lden_fer"]
+
+
+def layer_group(name):
+    """Groupe d'une couche (voir FORMATS)."""
+    if layer_network(name):
+        return "transport"
+    if name in AIR_POLLUTANTS:
+        return "air"
+    if name in NOISE_LAYERS:
+        return "bruit"
+    return "grille"
+
+
+def group_formats(meta):
+    """Format de chaque groupe d'une commune construite (meta.json d'avant les formats par groupe : le format
+    global vaut pour tous les groupes)."""
+    return meta.get("formats") or {g: meta.get("format", 1) for g in FORMATS}
+
+
+def outdated_groups(meta):
+    return {g for g, v in FORMATS.items() if group_formats(meta).get(g, 0) < v}
+
+
+def build_commune(code, log=print, groups=None):
+    """Construit la commune, ou la reconstruit en ne recalculant que les groupes de couches demandés (groups,
+    parmi FORMATS ; None : les groupes périmés, ou tous pour une nouvelle commune ; ensemble vide : seulement
+    les quartiers et meta.json). Les autres couches sont reprises de la version actuelle ; tout est recalculé
+    si la grille a changé (contour de la commune modifié). Renvoie meta, ou None si rien n'était à refaire."""
     row = commune_geom(code)
     nom = row.nom
-    log(f"{nom} : préparation")
     commune = gpd.GeoDataFrame([{"code": code, "nom": nom}], geometry=[row.geometry], crs=4326)
     commune_l93 = commune.to_crs(2154).geometry.iloc[0]
     grid = Grid(commune_l93.bounds)
-
-    stations, accesses = stations_near(commune_l93)
-    log(f"{nom} : {len(stations)} gares, {len(accesses)} accès")
+    out = COMMUNES_DIR / code
+    old_meta = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else None
+    same_grid = old_meta is not None and (old_meta["width"], old_meta["height"], old_meta["merc"]) == (
+        grid.width, grid.height, {"left": grid.left, "top": grid.top, "cell": CELL_M})
+    if groups is None:
+        groups = outdated_groups(old_meta) if old_meta else set(FORMATS)
+        if old_meta and not groups:
+            log(f"{nom} : déjà à jour")
+            return None
+    groups = set(groups)
+    if not same_grid or "grille" in groups:
+        groups = set(FORMATS)
+    reuse = [k for k in (old_meta or {}).get("layers", {}) if layer_group(k) not in groups]
+    log(f"{nom} : préparation" + ("" if groups == set(FORMATS) else
+                                   f" (recalcul : {', '.join(sorted(groups)) or 'quartiers seulement'})"))
 
     layers = {"commune": grid.burn([(commune.to_crs(3857).geometry.iloc[0], 1)])}
+    for k in reuse:  # couches reprises de la version actuelle
+        layers[k] = np.fromfile(out / f"{k}.bin", dtype=old_meta["layers"][k]["dtype"]).reshape(grid.shape)
 
-    # Temps de trajet réels jusqu'à la gare la plus proche, par mode (marche, vélo) et par réseau ;
-    # l'application combine les réseaux choisis pour le mode choisi.
-    x, y, graphs = build_graphs(*load_osm(osm_bounds(commune_l93), lambda m: log(f"{nom} : {m}")))
-    if len(stations):
-        layers.update(travel_times(grid, stations, accesses, x, y, graphs, lambda m: log(f"{nom} : {m}")))
+    if "transport" in groups:
+        stations, accesses = stations_near(commune_l93)
+        log(f"{nom} : {len(stations)} gares, {len(accesses)} accès")
+        # Temps de trajet réels jusqu'à la gare la plus proche, par mode (marche, vélo) et par réseau ;
+        # l'application combine les réseaux choisis pour le mode choisi.
+        x, y, graphs = build_graphs(*load_osm(osm_bounds(commune_l93), lambda m: log(f"{nom} : {m}")))
+        if len(stations):
+            layers.update(travel_times(grid, stations, accesses, x, y, graphs, lambda m: log(f"{nom} : {m}")))
+        else:
+            for mode in TRAVEL_MODES:
+                for net in NETWORKS.values():
+                    layers[f"{mode}_{net}"] = np.full(grid.shape, 65535, "uint16")
+                    layers[f"station_{mode}_{net}"] = np.full(grid.shape, NO_STATION, "uint16")
+        station_meta = [{"zdc": z, "nom": n, "lignes": list(l), "networks": list(k),
+                         **({"date": d} if isinstance(d, str) else {})}
+                        for z, n, l, k, d in zip(stations.zdc, stations.nom, stations.lignes, stations.networks,
+                                                 stations.date)]
+        extra_networks = station_networks(stations)[len(NETWORKS):]
     else:
-        for mode in TRAVEL_MODES:
-            for net in NETWORKS.values():
-                layers[f"{mode}_{net}"] = np.full(grid.shape, 65535, "uint16")
-                layers[f"station_{mode}_{net}"] = np.full(grid.shape, NO_STATION, "uint16")
+        station_meta = old_meta["stations"]
+        extra_networks = old_meta.get("extra_networks", [])
 
-    log(f"{nom} : pollution de l'air (Airparif)")
-    for pol in AIR_POLLUTANTS:
-        layers[pol] = airparif_layer(grid, pol, code)
+    if "air" in groups:
+        log(f"{nom} : pollution de l'air (Airparif)")
+        for pol in AIR_POLLUTANTS:
+            layers[pol] = airparif_layer(grid, pol, code)
 
-    log(f"{nom} : bruit (Bruitparif)")
-    layers["bp_noise"], layers["bp_air"] = bruitparif_layers(grid, lambda m: log(f"{nom} : {m}"))
-    log(f"{nom} : bruit routier (Bruitparif)")
-    layers["lden_route"] = bruitparif_lden(grid, code, "route", lambda m: log(f"{nom} : {m}"))
-    log(f"{nom} : bruit ferroviaire (Bruitparif + DRIEAT)")
-    fer_bp = bruitparif_lden(grid, code, "fer", lambda m: log(f"{nom} : {m}"))
-    lden, lden_depts = drieat_lden(grid, lambda m: log(f"{nom} : {m}"))
-    # les deux dérivent des CSB E4 ; la DRIEAT n'a pas de classe sous 55 dB et ne couvre pas
-    # tout le Val-d'Oise ni l'Essonne : on garde la valeur la plus élevée
-    layers["lden_fer"] = np.maximum(fer_bp, lden["fer"])
+    if "bruit" in groups:
+        log(f"{nom} : bruit (Bruitparif)")
+        layers["bp_noise"], layers["bp_air"] = bruitparif_layers(grid, lambda m: log(f"{nom} : {m}"))
+        log(f"{nom} : bruit routier (Bruitparif)")
+        layers["lden_route"] = bruitparif_lden(grid, code, "route", lambda m: log(f"{nom} : {m}"))
+        log(f"{nom} : bruit ferroviaire (Bruitparif + DRIEAT)")
+        fer_bp = bruitparif_lden(grid, code, "fer", lambda m: log(f"{nom} : {m}"))
+        lden, lden_depts = drieat_lden(grid, lambda m: log(f"{nom} : {m}"))
+        # les deux dérivent des CSB E4 ; la DRIEAT n'a pas de classe sous 55 dB et ne couvre pas
+        # tout le Val-d'Oise ni l'Essonne : on garde la valeur la plus élevée
+        layers["lden_fer"] = np.maximum(fer_bp, lden["fer"])
 
-    out = COMMUNES_DIR / code
     tmp = COMMUNES_DIR / f".{code}.{os.getpid()}.part"  # propre au processus (serveur et CLI peuvent coexister)
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
     meta_layers = {}
     for name, arr in layers.items():
-        (tmp / f"{name}.bin").write_bytes(np.ascontiguousarray(arr).tobytes())
+        if name in reuse:  # fichiers repris tels quels (et leur version compressée : pas de recompression)
+            for suffix in (".bin", ".bin.gz"):
+                if (out / f"{name}{suffix}").exists():
+                    os.link(out / f"{name}{suffix}", tmp / f"{name}{suffix}")
+        else:
+            (tmp / f"{name}.bin").write_bytes(np.ascontiguousarray(arr).tobytes())
         meta_layers[name] = {"dtype": str(arr.dtype)}
     # paquet : couches de base seulement ; celles des tramways et des lignes en projet (extra_networks),
     # nombreuses autour de Paris, sont chargées une à une par l'application quand on les coche
-    extra = set(station_networks(stations)[len(NETWORKS):])
-    pack = [k for k in meta_layers if layer_network(k) not in extra]
+    pack = [k for k in meta_layers if layer_network(k) not in set(extra_networks)]
     write_pack(tmp, pack)
 
     commune.to_file(tmp / "commune.geojson", driver="GeoJSON")
     quart = quartiers(code, row.geometry, lambda m: log(f"{nom} : {m}"))
     if quart is not None:
         write_quartiers(tmp, quart, row.geometry)
-    st = stations.to_crs(4326)
-    gpd.GeoDataFrame({"zdc": st.zdc, "nom": st.nom, "lignes": st.lignes.map(" + ".join),
-                      "networks": st.networks.map(",".join)},
-                     geometry=st.geometry, crs=4326).to_file(tmp / "stations.geojson", driver="GeoJSON")
-    accesses[["zdc", "nom_acces", "geometry"]].to_crs(4326).to_file(tmp / "acces.geojson", driver="GeoJSON")
+    if "transport" in groups:
+        st = stations.to_crs(4326)
+        gpd.GeoDataFrame({"zdc": st.zdc, "nom": st.nom, "lignes": st.lignes.map(" + ".join),
+                          "networks": st.networks.map(",".join)},
+                         geometry=st.geometry, crs=4326).to_file(tmp / "stations.geojson", driver="GeoJSON")
+        accesses[["zdc", "nom_acces", "geometry"]].to_crs(4326).to_file(tmp / "acces.geojson", driver="GeoJSON")
+    else:
+        for f in ("stations.geojson", "acces.geojson"):
+            shutil.copy2(out / f, tmp / f)
 
     dep = row.codeDepartement
+    formats = {g: (FORMATS[g] if g in groups else group_formats(old_meta)[g]) for g in FORMATS}
     meta = {
-        "format": DATA_FORMAT,
+        # format global : DATA_FORMAT si tous les groupes sont à jour (l'application signale les autres)
+        "format": DATA_FORMAT if all(formats[g] >= v for g, v in FORMATS.items()) else min(formats.values()),
+        "formats": formats,
         "code": code, "nom": nom, "dep": dep,
         "width": grid.width, "height": grid.height, "bounds": grid.latlng_bounds(),
         "merc": {"left": grid.left, "top": grid.top, "cell": CELL_M},
         "row_cell_area_m2": grid.row_cell_area_m2(),
         "layers": meta_layers,
         "pack": pack,  # couches de layers.pack, dans l'ordre ; les autres : <couche>.bin
-        "stations": [{"zdc": z, "nom": n, "lignes": list(l), "networks": list(k), **({"date": d} if isinstance(d, str) else {})}
-                     for z, n, l, k, d in zip(stations.zdc, stations.nom, stations.lignes, stations.networks,
-                                              stations.date)],
+        "stations": station_meta,
         "networks": list(NETWORKS.values()),
         # réseaux en plus de RER, Transilien et métro ayant un arrêt à portée (couches <mode>_<réseau>) :
         # lignes de tramway, dates d'ouverture du Grand Paris Express et des prolongements de tramway
-        "extra_networks": station_networks(stations)[len(NETWORKS):],
+        "extra_networks": extra_networks,
         "modes": TRAVEL_MODES,
         "bike_speed_kmh": BIKE_SPEED_KMH,
         "walk_speed_kmh": WALK_SPEED_KMH,
@@ -1434,6 +1503,18 @@ def _commune_files(code):
     }
 
 
+# groupes de couches à recalculer quand une source a plus de MAX_AGE_DAYS (None : quartiers seulement,
+# refaits à chaque reconstruction ; "*" : tout, la grille pouvant changer)
+SOURCE_GROUPS = {"idfm": "transport", "gpe": "transport", "communes": "*", "airbruit": "bruit", "drieat": "bruit",
+                 "osm": "transport", "airparif": "air", "bruit_route": "bruit", "bruit_fer": "bruit",
+                 "quartiers": None, "iris": None}
+
+
+def _groups_for(keys):
+    groups = {SOURCE_GROUPS[k] for k in keys} - {None}
+    return sorted(FORMATS) if "*" in groups else sorted(groups)
+
+
 COMMUNE_SOURCE_LABELS = {"osm": "Réseau de rues (OpenStreetMap)", "airparif": "Pollution de l'air (Airparif)",
                          "bruit_route": "Bruit routier (Bruitparif)", "bruit_fer": "Bruit ferroviaire (Bruitparif)",
                          "quartiers": "Quartiers (Linternaute)", "iris": "Contours IRIS (IGN)"}
@@ -1460,18 +1541,19 @@ def freshness(max_age_days=MAX_AGE_DAYS):
         sources.append(entry)
         return entry
 
-    global_stale = False
+    global_stale = []  # sources communes périmées
     for key, label, files in _global_sources():
         e = summarize(key, label, files)
-        global_stale |= bool(e and e["stale"])
+        if e and e["stale"]:
+            global_stale.append(key)
 
     idx = WEB_DATA / "index.json"
     built = json.loads(idx.read_text())["communes"] if idx.exists() else []
     per_source = {k: set() for k in COMMUNE_SOURCE_LABELS}
     communes = []
-    pending = set(json.loads(REFRESH_STATE.read_text())["pending"]) if REFRESH_STATE.exists() else set()
+    pending = _pending_refresh()
     for c in built:
-        reasons = []
+        reasons, keys = [], list(global_stale)
         try:
             files = _commune_files(c["code"])
         except Exception:
@@ -1480,17 +1562,30 @@ def freshness(max_age_days=MAX_AGE_DAYS):
             per_source[k].update(fl)
             if any(f.exists() and f.stat().st_mtime < cutoff for f in fl):
                 reasons.append(COMMUNE_SOURCE_LABELS[k])
+                keys.append(k)
         if global_stale:
             reasons.append("données communes à mettre à jour")
+        groups = _groups_for(keys)
         if c["code"] in pending:
             reasons.append("mise à jour précédente interrompue")
+            groups = sorted(set(groups) | set(pending[c["code"]]))
         if reasons:
-            communes.append({"code": c["code"], "nom": c["nom"], "reasons": reasons})
+            # groups : groupes de couches à recalculer (vide : quartiers seulement)
+            communes.append({"code": c["code"], "nom": c["nom"], "reasons": reasons, "groups": groups})
     for k, fl in per_source.items():
         summarize(k, COMMUNE_SOURCE_LABELS[k], sorted(fl))
     return {"max_age_days": max_age_days, "cutoff": _iso(cutoff), "oldest": _iso(oldest_all),
             "sources": sources, "communes": communes,
-            "to_update": bool(communes) or global_stale}
+            "to_update": bool(communes) or bool(global_stale)}
+
+
+def _pending_refresh():
+    """Communes restant à reconstruire d'une mise à jour interrompue : {code: groupes} (ancien format du
+    fichier, simple liste de codes : tous les groupes)."""
+    if not REFRESH_STATE.exists():
+        return {}
+    pending = json.loads(REFRESH_STATE.read_text())["pending"]
+    return pending if isinstance(pending, dict) else {c: sorted(FORMATS) for c in pending}
 
 
 def refresh_stale(log=print, on_commune=None, max_age_days=MAX_AGE_DAYS):
@@ -1520,16 +1615,16 @@ def refresh_stale(log=print, on_commune=None, max_age_days=MAX_AGE_DAYS):
                 for layer in entry["layers"]:
                     if (RAW / "drieat" / f"{layer.split(':')[-1]}.gpkg").exists():
                         drieat_layer_gpkg(dep, entry["wfs"], layer, log)
-        todo = [c["code"] for c in report["communes"]]
+        todo = {c["code"]: c["groups"] for c in report["communes"]}
         REFRESH_STATE.write_text(json.dumps({"pending": todo}))
-        for k, code in enumerate(todo):
+        for k, (code, groups) in enumerate(todo.items()):
             log(f"mise à jour des communes ({k + 1}/{len(todo)})")
             try:
-                build_commune(code, log)
+                build_commune(code, log, groups=set(groups))  # seulement les couches des sources périmées
             except Exception as e:  # la commune garde ses anciennes données
                 errors[code] = str(e)
                 continue
-            pending = [c for c in json.loads(REFRESH_STATE.read_text())["pending"] if c != code]
+            pending = {c: g for c, g in _pending_refresh().items() if c != code}
             REFRESH_STATE.write_text(json.dumps({"pending": pending}))
             if on_commune:
                 on_commune()
@@ -1587,8 +1682,9 @@ def write_gz(path):
 
 
 def compress_dir(d):
+    """Version compressée de chaque fichier qui n'en a pas (couches reprises : leur .gz l'est aussi)."""
     for f in d.iterdir():
-        if f.suffix in COMPRESSED_SUFFIXES:
+        if f.suffix in COMPRESSED_SUFFIXES and not f.with_name(f.name + ".gz").exists():
             write_gz(f)
 
 
@@ -1605,11 +1701,13 @@ def compress_missing():
 
 
 def outdated_communes():
-    """Codes des communes construites avec un format de données antérieur."""
-    idx = WEB_DATA / "index.json"
-    if not idx.exists():
-        return []
-    return [c["code"] for c in json.loads(idx.read_text())["communes"] if c.get("format", 1) < DATA_FORMAT]
+    """Codes des communes dont un groupe de couches a un format antérieur (voir FORMATS)."""
+    out = []
+    for d in sorted(COMMUNES_DIR.iterdir()):
+        f = d / "meta.json"
+        if not d.name.startswith(".") and f.exists() and outdated_groups(json.loads(f.read_text())):
+            out.append(d.name)
+    return out
 
 
 def remove_commune(code):

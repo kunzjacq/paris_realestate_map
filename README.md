@@ -74,8 +74,9 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
 4. **Mises à niveau des données existantes** : résumé des plages de pollution ajouté aux communes qui ne
    l'ont pas ; quartiers (`quartiers.geojson`, `quartiers_limites.geojson`) calculés pour les communes qui
    n'en ont pas ou dont le calcul est antérieur (`QUARTIERS_FORMAT` dans `pipeline.py`), sans reconstruire
-   les communes ; versions compressées `.gz` créées ou rafraîchies ; communes produites avec un format de
-   données antérieur (`DATA_FORMAT` dans `pipeline.py`) mises en file de reconstruction.
+   les communes ; versions compressées `.gz` créées ou rafraîchies ; communes dont un groupe de couches a un
+   format antérieur (`FORMATS` dans `pipeline.py`, voir « File de construction ») mises en file de
+   reconstruction.
 5. **Cache du fond de carte** : tuiles de plus de 6 mois supprimées (en arrière-plan).
 
 ### Fichiers servis
@@ -118,8 +119,15 @@ Les constructions sont traitées une par une par un seul fil d'exécution (elles
 téléchargement). L'application interroge `/api/status` toutes les 1,5 s pendant une construction (5 s sinon) ;
 quand le numéro de version change, elle recharge l'index et affiche les communes nouvelles ou reconstruites.
 
+Les couches d'une commune forment quatre groupes, chacun avec son format (`FORMATS` dans `pipeline.py`, à
+incrémenter quand le calcul du groupe change) : `grille` (contour de la commune), `transport` (temps de
+trajet et gares : réseau OSM, gares IDFM et en projet), `air` (Airparif) et `bruit` (Bruitparif, DRIEAT). Une
+reconstruction ne recalcule que les groupes périmés et reprend les autres couches de la version actuelle
+(fichiers et versions compressées) ; tout est recalculé si la grille change (contour de la commune
+modifié). Un changement des transports ne refait donc ni la pollution ni le bruit (Vincennes : 10 s).
+
 Avant chaque construction, le serveur vérifie si `scripts/pipeline.py` a été modifié depuis son
-chargement : si oui, il le recharge et remet en file les communes au format de données antérieur. Une
+chargement : si oui, il le recharge et remet en file les communes dont un groupe est périmé. Une
 modification du pipeline ne demande donc pas de redémarrer le serveur ; une modification de `server.py`, si.
 Exception : les quartiers d'un calcul antérieur (`QUARTIERS_FORMAT`) ne sont recalculés qu'au démarrage.
 
@@ -140,9 +148,11 @@ La mise à jour (`POST /api/refresh`) passe par la file de construction :
 1. chaque fichier de plus de 6 mois est retéléchargé dans un fichier temporaire, qui ne remplace l'ancien
    qu'une fois complet ; si le téléchargement échoue, l'ancien fichier est conservé ;
 2. les conversions dérivées (carte air-bruit, couches DRIEAT) sont refaites de la même façon ;
-3. les communes concernées sont reconstruites une à une à côté de leur version actuelle, qui reste servie
-   jusqu'au remplacement. La liste des communes restant à faire est gardée dans `data/raw/refresh_state.json`
-   pour reprendre une mise à jour interrompue.
+3. les communes concernées sont reconstruites une à une, en ne recalculant que les groupes de couches des
+   sources périmées (réseau OSM ou gares : transports ; Airparif : air ; Bruitparif ou DRIEAT : bruit ;
+   quartiers ou IRIS : quartiers seulement ; contours des communes : tout), à côté de leur version actuelle,
+   qui reste servie jusqu'au remplacement. La liste des communes restant à faire (avec leurs groupes) est
+   gardée dans `data/raw/refresh_state.json` pour reprendre une mise à jour interrompue.
 
 Aucune donnée n'est donc effacée avant que sa nouvelle version soit disponible.
 
@@ -173,8 +183,12 @@ seule : pas d'ajout de communes, et les surfaces ne portent que sur les communes
 
 ```sh
 .venv-local/bin/python scripts/build_data.py 94068 94015    # codes INSEE (ou .venv/bin/python)
-.venv-local/bin/python scripts/build_data.py                # reconstruit toutes les communes présentes
+.venv-local/bin/python scripts/build_data.py                # communes présentes
+.venv-local/bin/python scripts/build_data.py --all 94068    # tout recalculer
 ```
+
+Une commune déjà construite n'est recalculée que pour ses groupes de couches périmés (voir « File de
+construction ») ; une commune à jour est laissée telle quelle, sauf avec `--all`.
 
 Paramètres en tête de `scripts/pipeline.py` : durées, rayon de recherche des gares, année Airparif,
 taille de cellule…
@@ -216,8 +230,9 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
   signalée « ⚠ route ».
 - Bruit ferroviaire : la DRIEAT ne publie pas de carte pour la Seine-et-Marne, les Yvelines, ni pour
   l'Essonne et le Val-d'Oise hors Métropole du Grand Paris ; la carte Bruitparif comble ces manques.
-- Format des données : `DATA_FORMAT` dans `scripts/pipeline.py`. Au démarrage, et après une modification
-  de `pipeline.py`, le serveur reconstruit les communes produites avec un format antérieur.
+- Format des données : `FORMATS` (un format par groupe de couches) dans `scripts/pipeline.py`. Au démarrage,
+  et après une modification de `pipeline.py`, le serveur reconstruit les communes dont un groupe a un format
+  antérieur, en ne recalculant que ce groupe.
 - Temps de trajet : calculés localement (scipy) sur le réseau OSM, à vitesse constante : ni feux, ni dénivelé,
   ni temps pour garer le vélo. Vitesses réglables en tête de `scripts/pipeline.py` (`WALK_SPEED_KMH`,
   `BIKE_SPEED_KMH`, `BIKE_SLOW_KMH`). Les seuils comparent le temps arrondi à la minute, comme l'affichage.
@@ -296,7 +311,7 @@ reconstruire une commune retéléchargera ses données.
 que soit son nom, et extrait l'archive à la racine du projet ; il refuse une archive contenant des chemins
 hors de `web/data/` et `data/raw/`. Les fichiers existants de même nom sont remplacés, les autres conservés.
 Ensuite, `./run.sh` recrée les versions compressées et reconstruit les éventuelles communes d'un format
-antérieur.
+antérieur (seulement les groupes de couches périmés).
 
 Pour repartir d'un clone du dépôt :
 
