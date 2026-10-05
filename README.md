@@ -33,7 +33,7 @@ l'autre (navigateur), comme la dernière vue de la carte.
 | Trajet jusqu'à une gare | filtre activable, à pied ou à vélo, réseaux RER / Transilien / Métro, seuil de 3 à 20 min (pas de 1 min) |
 | Pollution de l'air | un curseur par polluant (NO₂, PM2.5, PM10, moyennes annuelles), repères OMS et UE 2030 |
 | Bruit des transports | Lden routier et ferroviaire maximal (de < 75 à < 45 dB), indice global Bruitparif (3 niveaux) |
-| Affichage | couche de contexte (temps de trajet, polluants, bruits), zone retenue, contour de la zone atteignable |
+| Affichage | couche de contexte (temps de trajet, polluants, bruits), zone retenue, contour de la zone atteignable, quartiers |
 | Données | âge des données et bouton de mise à jour de celles de plus de 6 mois (voir « Serveur ») |
 | Zone retenue | repliable : surface retenue totale et par commune, part de la surface respectant chaque critère seul |
 
@@ -43,6 +43,8 @@ l'autre (navigateur), comme la dernière vue de la carte.
   communes téléchargées est assombri. Avec une couche de contexte, la zone n'est pas teintée et son trait est noir.
 - **Communes non téléchargées** : voile gris hachuré. Un clic dessus propose « Ajouter cette commune ».
 - **Contour pointillé bleu** : zone atteignable dans le temps choisi (temps de trajet seul).
+- **Quartiers** (option « Quartiers » d'« Affichage ») : limites en pointillés gris fins, noms en italique à
+  partir du zoom 14 ; l'encadré de survol indique la commune et le quartier du point.
 - **Gares** : seules les 3 plus proches de la souris sont affichées, avec leurs accès et leur nom (rose : RER,
   bleu : Transilien, jaune : métro) ; la gare retenue pour le point survolé est agrandie.
 - **Encadré en haut à droite** (point sous la souris, pointeur en croix) : gare la plus rapide à atteindre,
@@ -65,8 +67,8 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
 2. **Contours des communes d'Île-de-France** : chargés depuis `data/raw/idf_communes.gpkg` (téléchargés une
    fois sur geo.api.gouv.fr) ; ils servent à la recherche et aux requêtes « commune sous un point ».
 3. **Index** : `web/data/index.json` est créé s'il manque.
-4. **Mises à niveau des données existantes** : résumé des plages de pollution ajouté aux communes qui ne
-   l'ont pas, versions compressées `.gz` créées ou rafraîchies, et communes produites avec un format de
+4. **Mises à niveau des données existantes** : résumé des plages de pollution et quartiers
+   (`quartiers.geojson`) ajoutés aux communes qui ne les ont pas, versions compressées `.gz` créées ou rafraîchies, et communes produites avec un format de
    données antérieur (`DATA_FORMAT` dans `pipeline.py`) mises en file de reconstruction.
 
 ### Fichiers servis
@@ -108,7 +110,8 @@ modification du pipeline ne demande donc pas de redémarrer le serveur ; une mod
 
 Chaque fichier téléchargé (`data/raw/`) est daté de son téléchargement. `GET /api/freshness` les regroupe par
 source : gares et accès IDFM, contours des communes, indice air-bruit, bruit DRIEAT (communs à toutes les
-communes), réseau OSM, pollution Airparif, bruit routier et ferroviaire Bruitparif (propres à chaque commune).
+communes), réseau OSM, pollution Airparif, bruit routier et ferroviaire Bruitparif, quartiers Linternaute (propres à
+chaque commune).
 Une commune est à mettre à jour si l'une de ses données a plus de 6 mois (`MAX_AGE_DAYS` dans `pipeline.py`),
 si une donnée commune a plus de 6 mois, ou si une mise à jour précédente a été interrompue avant elle.
 
@@ -179,6 +182,7 @@ taille de cellule…
 | Bruit ferroviaire | Bruitparif, CSB E4 consolidée (`CSB4_w4echConso_Fer_A_Lden`), complétée par la DRIEAT (CSB E4 2022, SNCF et RATP) | Lden en 8 classes ; dans chaque cellule, la valeur la plus élevée des deux sources |
 | Indice global (option) | Bruitparif/Airparif, cartographie air-bruit 2024 | 3 niveaux, route + fer + avion |
 | Contours des communes | geo.api.gouv.fr | |
+| Quartiers | Linternaute, carte « Liste des quartiers » des pages ville (données Yanport, endpoint `/od/map`, réponses en cache dans `data/raw/quartiers/`) | polygones nommés, découpés par le contour de la commune ; `quartiers.geojson` par commune ; noms corrigés au besoin dans `QUARTIER_RENAMES` (`pipeline.py`) |
 
 Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'environ 10 m par commune.
 
@@ -201,6 +205,11 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
   ne demande plus rien à Overpass.
 - En WCS 2.0, le GeoServer d'Airparif échoue sur certaines emprises. Le pipeline utilise donc
   WCS 1.0 et vérifie qu'il reçoit bien un GeoTIFF.
+- Quartiers : endpoint interne et non documenté de Linternaute, qui peut changer ; licence de réutilisation
+  non précisée. Contours grossiers (une vingtaine de sommets par quartier), qui débordent de la commune ou
+  la laissent découverte jusqu'à ~80 m. Certaines petites communes n'ont pas de découpage ; à
+  Le Chesnay-Rocquencourt, seul ~60 % de la commune est couvert. Un échec de téléchargement n'empêche pas la
+  construction : le fichier manque et le serveur réessaie à son démarrage suivant.
 
 ## Dépôt git et données
 

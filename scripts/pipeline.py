@@ -5,6 +5,7 @@ web/data/communes/<code>/ :
   meta.json      description de la grille, des couches et des gares utilisées
   <couche>.bin   une couche raster par fichier (uint8 ou uint16, ligne par ligne, nord en haut)
   commune.geojson, stations.geojson, acces.geojson
+  quartiers.geojson  découpage en quartiers (Linternaute), absent si le téléchargement a échoué
 
 web/data/index.json liste les communes construites ; web/data/global/ regroupe
 les gares et accès de toutes les communes pour l'affichage. Les contours des zones
@@ -78,6 +79,7 @@ MODE_NAMES = {"walk": "à pied", "bike": "à vélo"}
 
 GEO_API = "https://geo.api.gouv.fr"
 AIRPARIF_WCS = "https://namek.airparif.fr/geoserver/ows"
+LINTERNAUTE_MAP = "https://www.linternaute.com/od/map"  # contours des quartiers (données Yanport)
 IDFM_API = "https://data.iledefrance-mobilites.fr/api/explore/v2.1/catalog/datasets"
 OVERPASS = ["https://overpass-api.de/api/interpreter",  # serveurs essayés à tour de rôle
             "https://overpass.private.coffee/api/interpreter",
@@ -228,6 +230,71 @@ def commune_geom(code):
     if row.empty:
         raise ValueError(f"commune {code} inconnue ou hors Île-de-France")
     return row.iloc[0]
+
+
+# --------------------------------------------------------------------------- quartiers
+
+QUARTIER_RENAMES = {  # code INSEE -> {nom Linternaute: nom affiché}
+    "95428": {"Bas Montmorency Centre": "Bas Montmorency", "Centre Montmorency Centre": "Centre Montmorency",
+              "Haut Montmorency Est": "Haut Montmorency"},
+}
+
+
+def quartiers(code, commune_wgs, log=print):
+    """Quartiers de la commune selon Linternaute (carte « Liste des quartiers », données Yanport),
+    découpés par le contour officiel de la commune : ils en débordent jusqu'à ~80 m. GeoDataFrame
+    (nom, geometry), vide si Linternaute ne découpe pas la commune, None si le téléchargement échoue
+    (la construction continue sans quartiers)."""
+    d = RAW / "quartiers"
+    d.mkdir(exist_ok=True)
+
+    def fetch():
+        opts = {"contours": {"entites": {"type_entites": "YanportTownArea", "nombre_elements": 500,
+                                         "filtres": [{"predicat": "partOfTown", "valeur": f"ville-{code}"}]}}}
+        r = http_get(LINTERNAUTE_MAP, params={"directory": "odvilles", "entity_uri": f"ville-{code}",
+                                              "options": json.dumps(opts, separators=(",", ":"))})
+        r.json()["features"]["features"]  # format attendu, sinon rien n'est mis en cache
+        return r.content
+    try:
+        f = cached(d / f"{code}.json", fetch)
+        feats = json.loads(f.read_bytes())["features"]["features"]
+    except Exception as e:
+        log(f"quartiers indisponibles ({e})")
+        return None
+    if not feats:
+        return gpd.GeoDataFrame({"nom": []}, geometry=[], crs=4326)
+    renames = QUARTIER_RENAMES.get(code, {})
+    names = [ft["properties"].get("name", "").strip() for ft in feats]
+    g = gpd.GeoDataFrame({"nom": [renames.get(n, n) for n in names]},
+                         geometry=[shape(ft["geometry"]) for ft in feats], crs=4326)
+    g["geometry"] = g.geometry.make_valid()
+    g = gpd.clip(g, commune_wgs, keep_geom_type=True)
+    return g[~g.geometry.is_empty].sort_values("nom").reset_index(drop=True)
+
+
+def write_quartiers(d, g):
+    (d / "quartiers.geojson").write_text(g.to_json(drop_id=True, ensure_ascii=False))
+
+
+def add_missing_quartiers(log=print):
+    """Ajoute quartiers.geojson aux communes construites sans (avant son introduction, ou
+    téléchargement échoué) ; renvoie le nombre de communes complétées."""
+    n = 0
+    for d in sorted(COMMUNES_DIR.iterdir()):
+        meta_f = d / "meta.json"
+        if d.name.startswith(".") or not meta_f.exists() or (d / "quartiers.geojson").exists():
+            continue
+        meta = json.loads(meta_f.read_text())
+        g = quartiers(d.name, commune_geom(d.name).geometry, lambda m: log(f"{meta['nom']} : {m}"))
+        if g is None:
+            continue
+        write_quartiers(d, g)
+        write_gz(d / "quartiers.geojson")
+        meta["quartiers"] = len(g)
+        meta_f.write_text(json.dumps(meta, ensure_ascii=False))
+        write_gz(meta_f)
+        n += 1
+    return n
 
 
 # --------------------------------------------------------------------------- gares
@@ -799,6 +866,9 @@ def build_commune(code, log=print):
     write_pack(tmp, meta_layers)
 
     commune.to_file(tmp / "commune.geojson", driver="GeoJSON")
+    quart = quartiers(code, row.geometry, lambda m: log(f"{nom} : {m}"))
+    if quart is not None:
+        write_quartiers(tmp, quart)
     st = stations.to_crs(4326)
     gpd.GeoDataFrame({"zdc": st.zdc, "nom": st.nom, "lignes": st.lignes.map(" + ".join),
                       "networks": st.networks.map(",".join)},
@@ -825,6 +895,7 @@ def build_commune(code, log=print):
         "route_coverage": round(float((layers["lden_route"][layers["commune"] > 0] > 0).mean()), 3),
         "built": time.strftime("%Y-%m-%d %H:%M"),
         "air_range": air_range(layers),
+        "quartiers": None if quart is None else len(quart),  # None : pas de quartiers.geojson
     }
     (tmp / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
     compress_dir(tmp)
@@ -995,11 +1066,13 @@ def _commune_files(code):
         "airparif": [RAW / "airparif" / f"{pol}_{AIR_YEAR}_{code}.tif" for pol in AIR_POLLUTANTS],
         "bruit_route": sorted((RAW / "bruitparif_route" / code).glob("*.png")),
         "bruit_fer": sorted((RAW / "bruitparif_fer" / code).glob("*.png")),
+        "quartiers": [RAW / "quartiers" / f"{code}.json"],
     }
 
 
 COMMUNE_SOURCE_LABELS = {"osm": "Réseau de rues (OpenStreetMap)", "airparif": "Pollution de l'air (Airparif)",
-                         "bruit_route": "Bruit routier (Bruitparif)", "bruit_fer": "Bruit ferroviaire (Bruitparif)"}
+                         "bruit_route": "Bruit routier (Bruitparif)", "bruit_fer": "Bruit ferroviaire (Bruitparif)",
+                         "quartiers": "Quartiers (Linternaute)"}
 REFRESH_STATE = RAW / "refresh_state.json"  # communes restant à reconstruire d'une mise à jour interrompue
 
 

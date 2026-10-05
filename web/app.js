@@ -48,6 +48,7 @@ const state = {
   context: "none",
   showZone: true,
   showIso: true,
+  showQuartiers: true,
 };
 
 let index = null;            // data/index.json
@@ -85,9 +86,13 @@ function loadState() {
 async function loadCommuneMeta(code, built) {
   const base = `data/communes/${code}/`;
   const [meta, outlineGeo] = await Promise.all([getJSON(base + "meta.json"), getJSON(base + "commune.geojson")]);
+  // quartiers (Linternaute) : absents pour certaines communes, facultatifs pour l'affichage
+  const quartiersGeo = meta.quartiers ? await getJSON(base + "quartiers.geojson").catch(() => null) : null;
   const old = communes.get(code);
   if (old) removeCommuneLayers(old);
   communes.set(code, {
+    quartiers: quartiersLayer(quartiersGeo),
+    quartierAreas: (quartiersGeo?.features || []).map(quartierArea),
     code, meta, built, loaded: false, loading: null,
     outlineRings: outlineGeo.features.flatMap((f) => geoRings(f.geometry)),
     outline: L.geoJSON(outlineGeo, { style: { color: "#1f2328", weight: 2, fill: false }, interactive: false }).addTo(map),
@@ -175,6 +180,54 @@ function communeLabel(nom, geo) {
     pane: "labels", interactive: false, keyboard: false,
     icon: L.divIcon({ className: "commune-label", html: `<span>${nom}</span>`, iconSize: null }),
   });
+}
+
+// ------------------------------------------------------------------ quartiers
+// contours fins en pointillés et noms (à partir de QUARTIER_LABEL_MIN_ZOOM), sous l'isochrone
+
+const QUARTIER_LABEL_MIN_ZOOM = 14;
+
+function quartiersLayer(geo) {
+  const g = L.layerGroup();
+  if (!geo) return g;
+  g.addLayer(L.geoJSON(geo, { pane: "quartiers", interactive: false,
+    style: { color: "#3d4148", weight: 1.2, opacity: 0.8, dashArray: "4 4", fill: false } }));
+  for (const f of geo.features) {
+    g.addLayer(L.marker(labelPoint({ features: [f] }), {
+      pane: "labels", interactive: false, keyboard: false,
+      icon: L.divIcon({ className: "quartier-label", html: `<span>${f.properties.nom}</span>`, iconSize: null }),
+    }));
+  }
+  if (state.showQuartiers) g.addTo(map);
+  return g;
+}
+
+// polygones et emprise d'un quartier, pour retrouver le quartier sous la souris
+function quartierArea(f) {
+  const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
+  const pts = polys.flatMap((p) => p[0]);
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  return { nom: f.properties.nom, polys, bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] };
+}
+
+function quartierAt(c, latlng) {
+  const x = latlng.lng, y = latlng.lat;
+  const q = c.quartierAreas.find(({ polys, bbox: [x0, y0, x1, y1] }) =>
+    x >= x0 && x <= x1 && y >= y0 && y <= y1 && polys.some((poly) => {
+      let inside = false;  // pair-impair sur tous les anneaux : les trous sont exclus
+      for (const ring of poly) for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [xi, yi] = ring[i], [xj, yj] = ring[j];
+        if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+      }
+      return inside;
+    }));
+  return q ? q.nom : null;
+}
+
+function showQuartiers() {
+  for (const c of communes.values()) {
+    if (state.showQuartiers) c.quartiers.addTo(map); else map.removeLayer(c.quartiers);
+  }
 }
 
 // point « le plus intérieur » de la commune (loin de ses limites), recherché sur une grille :
@@ -276,7 +329,7 @@ function indexCells(c) {
 }
 
 function removeCommuneLayers(c) {
-  for (const k of ["context", "zone", "outline", "label"]) if (c[k]) map.removeLayer(c[k]);
+  for (const k of ["context", "zone", "outline", "label", "quartiers"]) if (c[k]) map.removeLayer(c[k]);
   if (c.iso) isoLayer.removeLayer(c.iso);
 }
 
@@ -400,6 +453,9 @@ function initMap() {
   unloaded.style.zIndex = 405;
   unloaded.style.pointerEvents = "none";
   map.createPane("zone").style.zIndex = 410;
+  const quartiers = map.createPane("quartiers");  // limites des quartiers, entre zone et isochrone
+  quartiers.style.zIndex = 415;
+  quartiers.style.pointerEvents = "none";
   map.createPane("iso").style.zIndex = 420;
   const labels = map.createPane("labels");  // noms de communes, au-dessus des zones
   labels.style.zIndex = 630;
@@ -422,7 +478,10 @@ function initMap() {
 
   map.on("click", onMapClick);
   map.on("moveend", () => { ensureVisibleLoaded(); drawVisibleZones(); drawIso(); saveView(); });
-  const labelsByZoom = () => map.getContainer().classList.toggle("labels-off", map.getZoom() < LABEL_MIN_ZOOM);
+  const labelsByZoom = () => {
+    map.getContainer().classList.toggle("labels-off", map.getZoom() < LABEL_MIN_ZOOM);
+    map.getContainer().classList.toggle("quartier-labels-off", map.getZoom() < QUARTIER_LABEL_MIN_ZOOM);
+  };
   map.on("zoomend", labelsByZoom);
   labelsByZoom();
   initHover();
@@ -1091,8 +1150,10 @@ function renderHover() {
   const sel = res[mode];
   const reached = sel.st && (!state.walkFilter || sel.t <= limitSec(limit));
   const how = { walk: "à pied", bike: "à vélo" };
-  // en-tête : la gare retenue pour le mode sélectionné, ou l'absence de gare dans le seuil
-  let html = reached
+  // en-tête : commune et quartier, puis la gare retenue pour le mode sélectionné, ou l'absence de gare dans le seuil
+  const quartier = quartierAt(c, e.latlng);
+  let html = `<div class="place">${c.meta.nom}${quartier ? ` · <strong>${quartier}</strong>` : ""}</div>`;
+  html += reached
     ? `<strong>${sel.st.nom}</strong><br><span class="muted">${sel.st.lignes.join(" + ")}</span>`
     : `<span class="ko">Aucune gare à ${limit} min ${how[mode]} ou moins</span>`;
   // les deux modes, toujours
@@ -1263,6 +1324,9 @@ function initControls() {
   bind("context", "context", true);
   bind("show-zone", "showZone", false, "checked");
   bind("show-iso", "showIso", false, "checked");
+  const quartiersBox = $("show-quartiers");
+  quartiersBox.checked = state.showQuartiers;
+  quartiersBox.addEventListener("change", () => { state.showQuartiers = quartiersBox.checked; saveState(); showQuartiers(); });
   makeFoldable("toggle-result", $("result"), "immo_map.resultFolded", "la zone retenue");
   initCommuneList();
 }

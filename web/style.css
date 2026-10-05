@@ -199,6 +199,14 @@ body.panel-hidden #panel, body.panel-hidden #resizer { display: none; }
   text-shadow: 0 0 2px #fff, 0 0 3px #fff, 0 0 5px #fff, 0 0 8px rgba(255,255,255,.9);
 }
 .labels-off .commune-label { display: none; }
+.quartier-label span {
+  display: block; transform: translate(-50%, -50%); white-space: nowrap;
+  font: italic 600 12px/1.1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #3d4148;
+  text-shadow: 0 0 2px #fff, 0 0 3px #fff, 0 0 5px #fff;
+}
+.quartier-labels-off .quartier-label { display: none; }
+.hover-box .place { color: var(--muted); margin-bottom: 3px; padding-bottom: 3px; border-bottom: 1px solid var(--line); }
+.hover-box .place strong { color: var(--ink); }
 
 /* pointeur en croix sur la carte (main de Leaflet seulement pendant le glissement) */
 #map.leaflet-grab, #map .leaflet-grab { cursor: crosshair; }
