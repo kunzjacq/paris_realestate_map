@@ -91,6 +91,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
 
 .field { display: block; margin-bottom: 10px; }
 .field span { display: block; margin-bottom: 4px; }
+select:disabled { color: var(--muted); background: var(--bg); }
 select { width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
 .check { display: block; margin-top: 6px; cursor: pointer; }
 .check input { accent-color: var(--accent); }

@@ -37,7 +37,8 @@ const ICON_TARGET = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"
 
 const state = {
   inactive: [],        // codes des communes décochées
-  walk: 10,
+  walk: 10,            // seuil (min) du mode courant : copie de limits[travelMode]
+  limits: { walk: 10, bike: 10 },  // seuil propre à chaque mode, retrouvé quand on revient au mode
   walkFilter: true,    // false : le temps de trajet n'est pas un critère
   travelMode: "walk",  // "walk" ou "bike"
   networks: { rer: true, transilien: true, metro: true },  // réseaux pris en compte pour le temps de trajet
@@ -75,7 +76,10 @@ function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
     Object.assign(state, saved, { networks: { ...state.networks, ...(saved.networks || {}) } });
+    // réglages d'avant les seuils par mode : l'ancien seuil commun vaut pour les deux modes
+    if (!saved.limits && saved.walk) state.limits = { walk: saved.walk, bike: saved.walk };
   } catch (e) { /* idem */ }
+  state.walk = state.limits[state.travelMode] ?? state.walk;
 }
 
 // ------------------------------------------------------------------ données
@@ -1277,7 +1281,8 @@ function initControls() {
   walk.parentElement.querySelectorAll(".ticks span").forEach((t) => {
     t.style.left = `${100 * (parseInt(t.textContent) - wMin) / (wMax - wMin)}%`;
   });
-  state.walk = Math.min(wMax, Math.max(wMin, state.walk));
+  for (const m of Object.keys(state.limits)) state.limits[m] = Math.min(wMax, Math.max(wMin, state.limits[m]));
+  state.walk = state.limits[state.travelMode];
   const walkFilter = $("walk-filter");
   const showWalk = () => {
     $("walk-out").textContent = state.walkFilter ? `≤ ${state.walk} min` : "pas de filtre";
@@ -1286,7 +1291,10 @@ function initControls() {
   };
   walk.value = state.walk;
   walkFilter.checked = state.walkFilter;
-  walk.addEventListener("input", () => { state.walk = +walk.value; showWalk(); scheduleUpdate(); });
+  walk.addEventListener("input", () => {
+    state.walk = state.limits[state.travelMode] = +walk.value;
+    showWalk(); scheduleUpdate();
+  });
   walkFilter.addEventListener("change", () => { state.walkFilter = walkFilter.checked; showWalk(); update(); });
   const modeSeg = $("travel-mode");
   const showMode = () => modeSeg.querySelectorAll("button").forEach((b) =>
@@ -1294,6 +1302,8 @@ function initControls() {
   modeSeg.addEventListener("click", (e) => {
     const b = e.target.closest("button"); if (!b || b.dataset.mode === state.travelMode) return;
     state.travelMode = b.dataset.mode; showMode();
+    state.walk = walk.value = state.limits[state.travelMode];  // seuil propre au mode
+    showWalk();
     for (const c of loadedCommunes()) combineWalk(c);
     update({ context: state.context === "walk" });
   });
@@ -1327,8 +1337,71 @@ function initControls() {
   const quartiersBox = $("show-quartiers");
   quartiersBox.checked = state.showQuartiers;
   quartiersBox.addEventListener("change", () => { state.showQuartiers = quartiersBox.checked; saveState(); showQuartiers(); });
+  initGoto();
   makeFoldable("toggle-result", $("result"), "immo_map.resultFolded", "la zone retenue");
   initCommuneList();
+}
+
+// ------------------------------------------------------------------ aller à une commune ou un quartier
+// commune choisie parmi les communes chargées : la carte se centre dessus et ses quartiers remplissent
+// la liste déroulante ; le choix d'un quartier centre ensuite la carte sur lui.
+
+// sans accents ni ponctuation, « saint(e) » abrégé en « st(e) » : « st maur » trouve Saint-Maur-des-Fossés
+const normName = (s) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+  .replace(/\bsaint(e?)\b/g, "st$1").replace(/[^a-z0-9]/g, "");
+
+function initGoto() {
+  const input = $("goto-commune"), list = $("goto-suggestions"), select = $("goto-quartier");
+  let results = [], sel = -1, code = null;
+  const setQuartiers = (c) => {
+    const noms = c ? c.quartierAreas.map((q) => q.nom).sort((a, b) => a.localeCompare(b, "fr")) : [];
+    select.innerHTML = !c ? "<option>Choisir d'abord une commune</option>"
+      : !noms.length ? "<option>Pas de quartiers pour cette commune</option>"
+      : `<option value="">Quartier (${noms.length})…</option>` + noms.map((n) => `<option>${n}</option>`).join("");
+    select.disabled = !noms.length;
+  };
+  const show = () => {
+    list.hidden = false;
+    list.innerHTML = results.length ? results.map((c, k) =>
+      `<li data-code="${c.code}" class="${k === sel ? "sel" : ""}">${c.meta.nom} <small>(${c.meta.dep})</small></li>`).join("")
+      : '<li class="empty">Aucune commune chargée de ce nom</li>';
+  };
+  const pick = (picked) => {
+    const c = communes.get(picked);
+    list.hidden = true;
+    if (!c) return;
+    code = picked; input.value = c.meta.nom;
+    setQuartiers(c);
+    fitTo([code]);
+    if (c.quartierAreas.length) select.focus();
+  };
+  input.addEventListener("input", () => {
+    code = null; setQuartiers(null);
+    const q = normName(input.value);
+    if (!q) { list.hidden = true; return; }
+    const hits = [...communes.values()].filter((c) => normName(c.meta.nom).includes(q));
+    const starts = (c) => !normName(c.meta.nom).startsWith(q);
+    results = hits.sort((a, b) => starts(a) - starts(b) || a.meta.nom.localeCompare(b.meta.nom, "fr")).slice(0, 10);
+    sel = results.length ? 0 : -1; show();
+  });
+  input.addEventListener("keydown", (e) => {
+    if (list.hidden) return;
+    if (e.key === "ArrowDown") { sel = Math.min(results.length - 1, sel + 1); show(); e.preventDefault(); }
+    if (e.key === "ArrowUp") { sel = Math.max(0, sel - 1); show(); e.preventDefault(); }
+    if (e.key === "Enter" && sel >= 0) { pick(results[sel].code); e.preventDefault(); }
+    if (e.key === "Escape") list.hidden = true;
+  });
+  list.addEventListener("mousedown", (e) => {
+    const li = e.target.closest("li[data-code]"); if (li) pick(li.dataset.code);
+  });
+  input.addEventListener("blur", () => setTimeout(() => { list.hidden = true; }, 150));
+  select.addEventListener("change", () => {
+    const q = communes.get(code)?.quartierAreas.find((a) => a.nom === select.value);
+    if (!q) return;
+    const [x0, y0, x1, y1] = q.bbox;
+    map.fitBounds([[y0, x0], [y1, x1]], { padding: [20, 20] });
+  });
+  setQuartiers(null);
 }
 
 // ------------------------------------------------------------------ menu : largeur et masquage

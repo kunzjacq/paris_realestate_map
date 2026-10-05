@@ -29,8 +29,9 @@ l'autre (navigateur), comme la dernière vue de la carte.
 
 | Rubrique | Contenu |
 |---|---|
+| Aller à | commune chargée (complétion, « st » vaut « saint »), puis quartier dans la liste déroulante : la carte se centre sur la commune dès qu'elle est choisie, puis sur le quartier |
 | Communes | liste repliable (clic sur le titre) : case pour inclure ou non la commune, centrage, retrait ; recherche, « Ajouter les communes visibles », suivi des constructions. « ⚠ route » / « ⚠ fer » : bruit connu sur moins de 90 % de la commune |
-| Trajet jusqu'à une gare | filtre activable, à pied ou à vélo, réseaux RER / Transilien / Métro, seuil de 3 à 20 min (pas de 1 min) |
+| Trajet jusqu'à une gare | filtre activable, à pied ou à vélo, réseaux RER / Transilien / Métro, seuil de 3 à 20 min (pas de 1 min), propre à chaque mode : changer de mode reprend le seuil de ce mode |
 | Pollution de l'air | un curseur par polluant (NO₂, PM2.5, PM10, moyennes annuelles), repères OMS et UE 2030 |
 | Bruit des transports | Lden routier et ferroviaire maximal (de < 75 à < 45 dB), indice global Bruitparif (3 niveaux) |
 | Affichage | couche de contexte (temps de trajet, polluants, bruits), zone retenue, contour de la zone atteignable, quartiers |

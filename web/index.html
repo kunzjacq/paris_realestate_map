@@ -16,6 +16,15 @@
     </header>
 
     <section>
+      <h2>Aller à</h2>
+      <div class="search">
+        <input type="search" id="goto-commune" placeholder="Commune chargée…" autocomplete="off" aria-label="Commune">
+        <ul id="goto-suggestions" class="suggestions" hidden></ul>
+      </div>
+      <select id="goto-quartier" aria-label="Quartier"></select>
+    </section>
+
+    <section>
       <h2>
         <button type="button" id="toggle-communes" class="fold" aria-expanded="true" aria-controls="communes">
           <span class="chevron" aria-hidden="true">▾</span>Communes
