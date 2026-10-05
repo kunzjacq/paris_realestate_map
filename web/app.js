@@ -19,12 +19,13 @@ const COLORS = {
 };
 const EMPTY_PNG = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
 const STORAGE_KEY = "immo_map.state.v3";
-const NETWORK_COLORS = { rer: "#c2185b", transilien: "#1565c0", metro: "#e0a100", gpe: "#00897b" };
+const NETWORK_COLORS = { rer: "#c2185b", transilien: "#1565c0", metro: "#e0a100", gpe: "#00897b", tram: "#5e35b1" };
 const NO_STATION = 65535;  // indice de gare d'une cellule sans gare atteignable
-// couleur d'une gare : RER, sinon Transilien, sinon métro, sinon Grand Paris Express (réseaux « gpeAAAAMMJJ »)
-const stationColor = (nets) => NETWORK_COLORS[["rer", "transilien", "metro", "gpe"].find((n) => nets.includes(n)) || "rer"];
+// couleur d'une gare : RER, sinon Transilien, sinon métro, sinon Grand Paris Express (réseaux « gpeAAAAMMJJ »),
+// sinon tramway (« tram3a », « tram1_AAAAMMJJ »)
+const stationColor = (nets) => NETWORK_COLORS[["rer", "transilien", "metro", "gpe", "tram"].find((n) => nets.includes(n)) || "rer"];
 const NEAR_STATIONS = 3;  // gares affichées : les plus proches de la souris
-const DATA_FORMAT = 11;  // doit suivre DATA_FORMAT de scripts/pipeline.py
+const DATA_FORMAT = 12;  // doit suivre DATA_FORMAT de scripts/pipeline.py
 const MODE_LABELS = { walk: "À pied", bike: "À vélo" };
 const UNREACHED = 65535;  // temps (s) d'une cellule hors d'atteinte
 // classe Lden (borne basse ; 40 = moins de 45 dB ; 0 = non renseigné) -> libellé
@@ -42,8 +43,10 @@ const state = {
   walkFilter: true,    // false : le temps de trajet n'est pas un critère
   travelMode: "walk",  // "walk" ou "bike"
   networks: { rer: true, transilien: true, metro: true },  // réseaux pris en compte pour le temps de trajet
+  trams: {},           // lignes de tramway prises en compte (« 3a » : true) ; aucune par défaut
   gpe: false,          // gares du Grand Paris Express en projet prises en compte
-  gpeDate: null,       // … si elles ouvrent au plus tard à cette date (AAAA-MM-JJ, parmi index.gpe)
+  tramProjects: false, // arrêts en projet des lignes de tramway cochées pris en compte
+  gpeDate: null,       // … lignes en projet ouvertes au plus tard à cette date (AAAA-MM-JJ, parmi projectDates())
   air: {},             // seuils en µg/m³ ; absent = pas de filtre
   bpNoise: 3,
   ldenRoute: 999,
@@ -115,7 +118,8 @@ async function loadCommuneData(c) {
     // une seule requête : couches à la suite, dans l'ordre de meta.layers
     const buf = await pack.arrayBuffer(), n = c.meta.width * c.meta.height;
     let off = 0;
-    for (const [name, info] of Object.entries(c.meta.layers)) {
+    for (const name of c.meta.pack || Object.keys(c.meta.layers)) {
+      const info = c.meta.layers[name];
       const T = info.dtype === "uint16" ? Uint16Array : Uint8Array;
       layers[name] = new T(buf.slice(off, off + n * T.BYTES_PER_ELEMENT));
       off += n * T.BYTES_PER_ELEMENT;
@@ -137,6 +141,32 @@ async function loadCommuneData(c) {
   });
   indexCells(c);
   combineWalk(c);
+  ensureNetworkLayers(c);
+}
+
+// couches des tramways et des lignes en projet : hors du paquet (nombreuses autour de Paris), chargées une à
+// une pour les réseaux cochés (les deux modes : l'encadré de survol donne le temps à pied et à vélo)
+async function ensureNetworkLayers(c) {
+  const base = `data/communes/${c.code}/`;
+  const names = selectedNetworks().flatMap((net) => ["walk", "bike"].flatMap((m) => [`${m}_${net}`, `station_${m}_${net}`]))
+    .filter((name) => c.meta.layers[name] && !c.L[name] && !(c.fetching ||= new Set()).has(name));
+  if (!names.length) return;
+  names.forEach((name) => c.fetching.add(name));
+  try {
+    await Promise.all(names.map(async (name) => {
+      const r = await fetch(`${base}${name}.bin`, { cache: "no-cache" });
+      if (!r.ok) throw new Error(`${base}${name}.bin : HTTP ${r.status}`);
+      const buf = await r.arrayBuffer();
+      if (communes.get(c.code) === c) c.L[name] = c.meta.layers[name].dtype === "uint16" ? new Uint16Array(buf) : new Uint8Array(buf);
+    }));
+  } catch (e) {
+    console.error(e);
+  } finally {
+    names.forEach((name) => c.fetching.delete(name));
+  }
+  if (communes.get(c.code) !== c) return;
+  combineWalk(c);
+  update({ context: state.context === "walk" });
 }
 
 // charge les communes visibles (avec une marge) pas encore chargées, puis les dessine.
@@ -323,12 +353,22 @@ function drawUnloadedMask() {
 const boundsOf = (c) => L.latLngBounds(c.meta.bounds);
 const loadedCommunes = () => [...communes.values()].filter((c) => c.loaded);
 
-// réseaux pris en compte : réseaux cochés, plus une couche par date d'ouverture du Grand Paris Express
-// atteinte à la date choisie (gares ouvertes au plus tard à cette date)
+// réseaux pris en compte : réseaux cochés, lignes de tramway cochées, et une couche par date d'ouverture des
+// lignes en projet atteinte à la date choisie (Grand Paris Express ; prolongements des tramways cochés)
 const gpeKey = (date) => "gpe" + date.replaceAll("-", "");
-const gpeNetworks = () => !state.gpe || !index?.gpe?.length ? []
-  : index.gpe.filter((d) => d <= state.gpeDate).map(gpeKey);
-const selectedNetworks = () => [...Object.keys(state.networks).filter((n) => state.networks[n]), ...gpeNetworks()];
+const tramKey = (line, date) => `tram${line.toLowerCase()}` + (date ? `_${date.replaceAll("-", "")}` : "");
+const projectDates = () => [...new Set([...(index?.gpe || []), ...Object.values(index?.tram_projects || {}).flat()])].sort();
+const tramLines = () => (index?.trams || []).filter((l) => state.trams[l]);
+function selectedNetworks() {
+  const nets = Object.keys(state.networks).filter((n) => state.networks[n]);
+  const open = (d) => d <= state.gpeDate;
+  for (const l of tramLines()) nets.push(tramKey(l));
+  if (state.gpe) nets.push(...(index?.gpe || []).filter(open).map(gpeKey));
+  if (state.tramProjects) {
+    for (const l of tramLines()) nets.push(...(index?.tram_projects?.[l] || []).filter(open).map((d) => tramKey(l, d)));
+  }
+  return nets;
+}
 
 // Temps de trajet en secondes (mode choisi) et gare la plus proche, tous réseaux choisis confondus
 function combineWalk(c) {
@@ -397,6 +437,7 @@ async function syncIndex() {
   }
   renderCommuneList();
   buildAirSliders();
+  buildTramList();
   buildGpeSlider();
   renderSources();
   drawUnloadedMask();
@@ -953,7 +994,7 @@ function renderCommuneList(jobStatus = lastStatus) {
 }
 
 // rubrique repliable par son titre, état mémorisé
-function makeFoldable(toggleId, body, storageKey, what) {
+function makeFoldable(toggleId, body, storageKey, what, foldedByDefault = false) {
   const toggle = $(toggleId);
   const setFolded = (folded) => {
     body.hidden = folded;
@@ -961,8 +1002,11 @@ function makeFoldable(toggleId, body, storageKey, what) {
     toggle.title = `${folded ? "Déplier" : "Replier"} ${what}`;
     try { localStorage.setItem(storageKey, folded ? "1" : ""); } catch (e) { /* stockage indisponible */ }
   };
-  let folded = false;
-  try { folded = localStorage.getItem(storageKey) === "1"; } catch (e) { /* idem */ }
+  let folded = foldedByDefault;
+  try {
+    const v = localStorage.getItem(storageKey);
+    if (v !== null) folded = v === "1";
+  } catch (e) { /* idem */ }
   setFolded(folded);
   toggle.addEventListener("click", () => setFolded(!body.hidden));
 }
@@ -1366,15 +1410,18 @@ function initControls() {
     box.checked = state.networks[net];
     box.addEventListener("change", () => { state.networks[net] = box.checked; networksChanged(); });
   }
-  const gpeBox = $("gpe-on"), gpeRange = $("gpe-date");
+  const gpeBox = $("gpe-on"), tramProj = $("tramproj-on"), gpeRange = $("gpe-date");
   gpeBox.checked = state.gpe;
+  tramProj.checked = state.tramProjects;
   gpeBox.addEventListener("change", () => { state.gpe = gpeBox.checked; showGpe(); networksChanged(); });
+  tramProj.addEventListener("change", () => { state.tramProjects = tramProj.checked; showGpe(); networksChanged(); });
   gpeRange.addEventListener("input", () => {
-    state.gpeDate = index.gpe[+gpeRange.value]; showGpe();
-    for (const c of loadedCommunes()) combineWalk(c);
+    state.gpeDate = projectDates()[+gpeRange.value]; showGpe();
+    for (const c of loadedCommunes()) { combineWalk(c); ensureNetworkLayers(c); }
     showNearStations(hoverEvt && hoverEvt.latlng);
     scheduleUpdate();
   });
+  initTrams();
   gpeRange.addEventListener("change", () => update({ context: state.context === "walk" }));
   showWalk();
 
@@ -1462,21 +1509,53 @@ function initGoto() {
   setQuartiers(null);
 }
 
-// réseaux ou gares du Grand Paris Express changés : temps de trajet recombinés
+// réseaux, tramways ou lignes en projet changés : temps de trajet recombinés (et couches manquantes chargées)
 function networksChanged() {
-  for (const c of loadedCommunes()) combineWalk(c);
+  for (const c of loadedCommunes()) { combineWalk(c); ensureNetworkLayers(c); }
   showNearStations(hoverEvt && hoverEvt.latlng);
   update({ context: state.context === "walk" });
 }
 
-// ------------------------------------------------------------------ Grand Paris Express
-// curseur sur les dates d'ouverture estimées par IDFM (index.gpe) : gares ouvertes au plus tard à la date choisie
+// ------------------------------------------------------------------ tramways
+// zone repliable : une case par ligne en service (index.trams), aucune cochée par défaut
+
+function buildTramList() {
+  const lines = index.trams || [];
+  $("tram-box").hidden = !lines.length;
+  $("tram-lines").innerHTML = lines.map((l) =>
+    `<label><input type="checkbox" data-line="${l}"${state.trams[l] ? " checked" : ""}> T${l}</label>`).join("");
+  showTramCount();
+}
+
+function showTramCount() {
+  const n = tramLines().length, tot = (index.trams || []).length;
+  $("tram-count").textContent = n ? `(${n} / ${tot})` : "(aucune)";
+  $("tramproj-label").classList.toggle("muted", !n);
+}
+
+function initTrams() {
+  makeFoldable("toggle-trams", $("tram-list"), "immo_map.tramsFolded", "les lignes de tramway", true);
+  $("tram-lines").addEventListener("change", (e) => {
+    const l = e.target.dataset.line; if (!l) return;
+    state.trams[l] = e.target.checked; showTramCount(); networksChanged();
+  });
+  const setAll = (on) => {
+    for (const l of index.trams || []) state.trams[l] = on;
+    buildTramList(); networksChanged();
+  };
+  $("tram-all").addEventListener("click", () => setAll(true));
+  $("tram-none").addEventListener("click", () => setAll(false));
+}
+
+// ------------------------------------------------------------------ lignes en projet
+// curseur sur les dates d'ouverture estimées par IDFM (Grand Paris Express et prolongements de tramway) :
+// arrêts ouverts au plus tard à la date choisie
 
 const fmtGpeDate = (d) => d.endsWith("-12-31") ? `fin ${d.slice(0, 4)}`
   : new Date(d).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
 
 function buildGpeSlider() {
-  const dates = index.gpe || [], range = $("gpe-date");
+  const dates = projectDates(), range = $("gpe-date");
   $("gpe-box").hidden = !dates.length;
   if (!dates.length) return;
   // date mémorisée, sinon la plus proche avant elle, sinon la dernière (toutes les lignes)
@@ -1484,17 +1563,19 @@ function buildGpeSlider() {
   state.gpeDate = dates[k >= 0 && state.gpeDate ? k : dates.length - 1];
   range.max = dates.length - 1;
   range.value = dates.indexOf(state.gpeDate);
-  $("gpe-ticks").innerHTML = dates.map((d, i) =>
-    `<span style="left:${dates.length > 1 ? (100 * i) / (dates.length - 1) : 0}%">${d.slice(0, 4)}</span>`).join("");
+  // une graduation par année (mi-2031 et fin 2031 : une seule)
+  $("gpe-ticks").innerHTML = dates.map((d, i) => i && dates[i - 1].slice(0, 4) === d.slice(0, 4) ? ""
+    : `<span style="left:${dates.length > 1 ? (100 * i) / (dates.length - 1) : 0}%">${d.slice(0, 4)}</span>`).join("");
   showGpe();
 }
 
 function showGpe() {
-  const n = (index.gpe || []).filter((d) => d <= state.gpeDate).length;
-  $("gpe-out").textContent = state.gpe ? `ouvertes d'ici ${fmtGpeDate(state.gpeDate)}` : "";
-  $("gpe-controls").classList.toggle("off", !state.gpe);
-  $("gpe-date").disabled = !state.gpe;
-  $("gpe-date").title = `${n} date${n > 1 ? "s" : ""} d'ouverture sur ${(index.gpe || []).length}`;
+  const on = state.gpe || state.tramProjects, dates = projectDates();
+  const n = dates.filter((d) => d <= state.gpeDate).length;
+  $("gpe-out").textContent = on ? `: ouvertes d'ici ${fmtGpeDate(state.gpeDate)}` : "";
+  $("gpe-controls").classList.toggle("off", !on);
+  $("gpe-date").disabled = !on;
+  $("gpe-date").title = `${n} date${n > 1 ? "s" : ""} d'ouverture sur ${dates.length}`;
 }
 
 // ------------------------------------------------------------------ menu : largeur et masquage

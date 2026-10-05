@@ -71,11 +71,12 @@ GRID_MARGIN_M = 300              # marge de la grille autour de la commune
 CELL_M = 15.0                    # taille de cellule en mètres Web Mercator (~10 m réels à 48,8°N)
 MAX_ACCESS_DIST_M = 400          # au-delà, un accès est jugé mal rattaché à la gare
 AIR_YEAR = 2025
-DATA_FORMAT = 11                 # à incrémenter quand le contenu des données change : le serveur reconstruit les anciennes
+DATA_FORMAT = 12                 # à incrémenter quand le contenu des données change : le serveur reconstruit les anciennes
 AIR_POLLUTANTS = ["no2", "pm25", "pm10"]
 # réseaux ferrés pris en compte pour le temps de marche : mode IDFM -> clé utilisée dans les données
 NETWORKS = {"RER": "rer", "TRAIN": "transilien", "METRO": "metro"}
 GPE_LINES = {"15", "16", "17", "18"}  # Grand Paris Express : lignes de métro en projet (réseaux « gpeAAAAMMJJ »)
+TRAM_MODES = ("TRAMWAY", "TRAM")     # tramways en service : un réseau par ligne (« tram1 », « tram3a »…)
 NO_STATION = 65535               # indice de gare d'une cellule sans gare atteignable (uint16)
 TRAVEL_MODES = ["walk", "bike"]
 MODE_NAMES = {"walk": "à pied", "bike": "à vélo"}
@@ -110,7 +111,7 @@ SOURCES = {
     "bruitparif": "Bruitparif / Airparif, cartographie air-bruit 2024 (9 classes, toutes voies)",
     "route": "Bruitparif, carte stratégique de bruit E4 consolidée, bruit routier Lden en 8 classes (MapProxy raster.bruitparif.fr)",
     "lden": "Bruit ferroviaire : Bruitparif, CSB E4 consolidée (8 classes), complétée par la DRIEAT (CSB E4 2022, valeur la plus élevée retenue)",
-    "gpe": "Grand Paris Express : gares des lignes 15 à 18 et dates de mise en service estimées (IDFM, projets_arrets_idf et projets_lignes_idf)",
+    "gpe": "Grand Paris Express et prolongements de tramway : arrêts en projet et dates de mise en service estimées (IDFM, projets_arrets_idf et projets_lignes_idf)",
     "walk": f"Temps à pied : plus court chemin sur le réseau OpenStreetMap jusqu'aux entrées des gares (IDFM), {WALK_SPEED_KMH} km/h",
     "bike": f"Temps à vélo : réseau OpenStreetMap, sens uniques respectés (sauf contresens cyclables), {BIKE_SPEED_KMH} km/h ({BIKE_SLOW_KMH} km/h sur voies piétonnes)",
 }
@@ -457,10 +458,11 @@ def add_missing_quartiers(log=print):
 
 def idfm_tables():
     # le nom du cache dépend des modes demandés : ajouter un réseau force un nouveau téléchargement
-    gares = gpd.read_file(cached(RAW / f"idfm_gares_{'_'.join(sorted(NETWORKS)).lower()}.geojson", lambda: http_get(
+    modes = sorted([*NETWORKS, *TRAM_MODES])
+    gares = gpd.read_file(cached(RAW / f"idfm_gares_{'_'.join(modes).lower()}.geojson", lambda: http_get(
         f"{IDFM_API}/emplacement-des-gares-idf/exports/geojson",
-        params={"where": " or ".join(f'mode="{m}"' for m in NETWORKS)}).content)).to_crs(2154)
-    gares = gares[gares.res_com.str.match(r"^(RER [A-E]|TRAIN [A-Z]|METRO \w+)$")]
+        params={"where": " or ".join(f'mode="{m}"' for m in modes)}).content)).to_crs(2154)
+    gares = gares[gares.res_com.str.match(r"^(RER [A-E]|TRAIN [A-Z]|METRO \w+|TRAM \w+)$")]
     rel = pd.read_csv(cached(RAW / "idfm_relations_acces.csv", lambda: http_get(
         f"{IDFM_API}/relations-acces/exports/csv", params={"delimiter": ";"}).content), sep=";", dtype=str)
     acc = pd.read_csv(cached(RAW / "idfm_acces.csv", lambda: http_get(
@@ -474,30 +476,39 @@ def gpe_key(date):
     return "gpe" + date.replace("-", "")
 
 
-def gpe_stations():
-    """Gares des lignes 15 à 18 du Grand Paris Express, avec leur date de mise en service estimée par IDFM
-    (jeux « projets_arrets_idf » et « projets_lignes_idf »). La date d'un arrêt est celle de son opération et de
-    sa phase (une même opération regroupe des phases de dates différentes) ; une gare desservie par plusieurs
-    lignes ouvre avec la première. GeoDataFrame (zdc, nom, lignes, networks, date, geometry) en Lambert 93 ;
-    networks : le réseau de sa date (gpe_key), pour que l'application combine les gares ouvertes à une date
-    donnée comme elle combine RER, Transilien et métro."""
+def tram_key(line, date=None):
+    """Réseau d'une ligne de tramway (« tram3a »), ou de ses arrêts en projet ouvrant à cette date
+    (« tram1_20281231 »)."""
+    return f"tram{line.lower()}" + (f"_{date.replace('-', '')}" if date else "")
+
+
+def project_stations():
+    """Arrêts en projet, avec leur date de mise en service estimée par IDFM (jeux « projets_arrets_idf » et
+    « projets_lignes_idf ») : gares des lignes 15 à 18 du Grand Paris Express et arrêts des prolongements de
+    tramway. La date d'un arrêt est celle de son opération et de sa phase (une même opération regroupe des
+    phases de dates différentes) ; une gare du Grand Paris Express desservie par plusieurs lignes ouvre avec la
+    première. GeoDataFrame (zdc, nom, lignes, networks, date, geometry) en Lambert 93 ; networks : le réseau
+    de sa date (gpe_key, ou tram_key de sa ligne), pour que l'application combine les arrêts ouverts à une
+    date donnée comme elle combine RER, Transilien et métro."""
     arrets = gpd.read_file(cached(RAW / "idfm_projets_arrets.geojson", lambda: http_get(
         f"{IDFM_API}/projets_arrets_idf/exports/geojson").content))
     lignes = gpd.read_file(cached(RAW / "idfm_projets_lignes.geojson", lambda: http_get(
         f"{IDFM_API}/projets_lignes_idf/exports/geojson").content))
     cols = ["zdc", "nom", "lignes", "networks", "date", "geometry"]
-    arrets = arrets[(arrets["mode"] == "métro") & arrets.indice.isin(GPE_LINES)]
-    lignes = lignes[(lignes["mode"] == "métro") & lignes.indice.isin(GPE_LINES) & lignes.mes_estime.notna()]
+    keep = lambda d: ((d["mode"] == "métro") & d.indice.isin(GPE_LINES)) | (d["mode"] == "tram")
+    arrets, lignes = arrets[keep(arrets)], lignes[keep(lignes) & lignes.mes_estime.notna()]
     dates = (pd.DataFrame({"id_operati": lignes.id_operati, "phase": lignes.phase,
                            "date": pd.to_datetime(lignes.mes_estime, utc=True).dt.strftime("%Y-%m-%d")})
              .groupby(["id_operati", "phase"]).date.min())
     arrets = arrets.join(dates, on=["id_operati", "phase"])
-    arrets = arrets[arrets.date.notna()].to_crs(2154)  # opération sans date (Versailles phase 4, déjà en phase 3)
+    # opération sans date : Versailles Chantiers phase 4 (déjà en phase 3), T4 Montfermeil, T1 Quatre Routes
+    arrets = arrets[arrets.date.notna()].to_crs(2154)
     if arrets.empty:
         return gpd.GeoDataFrame(columns=cols, geometry="geometry", crs=2154)
     norm = lambda n: re.sub(r"[^a-z0-9]", "", n.lower().translate(str.maketrans("àâäéèêëîïôöùûüç", "aaaeeeeiioouuuc")))
     rows = []
-    for key, grp in arrets.groupby(arrets.nom_arret.map(norm)):
+    gpe = arrets[arrets["mode"] == "métro"]
+    for key, grp in gpe.groupby(gpe.nom_arret.map(norm)):
         first = grp.groupby("indice").date.min()  # ouverture de chaque ligne à cette gare
         date = first.min()
         rows.append({
@@ -506,24 +517,33 @@ def gpe_stations():
             "networks": [gpe_key(date)], "date": date,
             "geometry": unary_union(list(grp.geometry)).centroid,
         })
+    tram = arrets[arrets["mode"] == "tram"]
+    for (line, key), grp in tram.groupby([tram.indice, tram.nom_arret.map(norm)]):
+        date = grp.date.min()
+        rows.append({
+            "zdc": f"{tram_key(line)}-{key}", "nom": grp.nom_arret.iloc[0],
+            "lignes": [f"Tram T{line} ({date[:4]})"],
+            "networks": [tram_key(line, date)], "date": date,
+            "geometry": unary_union(list(grp.geometry)).centroid,
+        })
     return gpd.GeoDataFrame(rows, crs=2154)
 
 
 def line_label(res_com):
-    """« TRAIN P » -> « Transilien P », « METRO 7bis » -> « Métro 7bis »."""
-    return res_com.replace("TRAIN ", "Transilien ").replace("METRO ", "Métro ")
+    """« TRAIN P » -> « Transilien P », « METRO 7bis » -> « Métro 7bis », « TRAM 3a » -> « Tram T3a »."""
+    return res_com.replace("TRAIN ", "Transilien ").replace("METRO ", "Métro ").replace("TRAM ", "Tram T")
 
 
 def line_order(label):
-    """RER, puis Transilien, puis métro ; numéros de métro dans l'ordre numérique."""
-    kind = 0 if label.startswith("RER") else 1 if label.startswith("Transilien") else 2
-    num = re.match(r"Métro (\d+)", label)
+    """RER, puis Transilien, puis métro, puis tramway ; numéros dans l'ordre numérique."""
+    kind = 0 if label.startswith("RER") else 1 if label.startswith("Transilien") else 2 if label.startswith("Métro") else 3
+    num = re.match(r"(?:Métro |Tram T)(\d+)", label)
     return (kind, int(num.group(1)) if num else 0, label)
 
 
 def stations_near(commune_l93):
-    """Gares à portée de la commune : gares IDFM en service (avec leurs accès), puis gares du Grand Paris
-    Express en projet (sans accès connus : on part du point de la gare)."""
+    """Gares à portée de la commune : gares et arrêts de tramway IDFM en service (avec leurs accès), puis
+    gares du Grand Paris Express et arrêts de tramway en projet (sans accès connus : on part du point)."""
     gares, acc = idfm_tables()
     zone = commune_l93.buffer(STATION_SEARCH_RADIUS_M)
     gares = gares[gares.within(zone)]
@@ -535,12 +555,14 @@ def stations_near(commune_l93):
             "nom": grp.nom_zdc.iloc[0],
             # « TRAIN P » -> « Transilien P » ; RER d'abord
             "lignes": sorted({line_label(l) for l in grp.res_com}, key=line_order),
-            "networks": sorted({NETWORKS[m] for m in grp["mode"]}),
+            # un réseau par mode, sauf le tramway : un par ligne (sélection ligne à ligne dans l'application)
+            "networks": sorted({tram_key(rc.split()[1]) if m in TRAM_MODES else NETWORKS[m]
+                                for m, rc in zip(grp["mode"], grp.res_com)}),
             "zdas": sorted(set(grp.id_ref_zda.astype(str))),
             "geometry": unary_union(list(grp.geometry)).centroid,
         })
-    gpe = gpe_stations()
-    for r in gpe[gpe.within(zone)].itertuples():
+    projects = project_stations()
+    for r in projects[projects.within(zone)].itertuples():
         stations.append({"zdc": r.zdc, "nom": r.nom, "lignes": r.lignes, "networks": r.networks, "zdas": [],
                          "date": r.date, "geometry": r.geometry})
     if not stations:
@@ -744,10 +766,11 @@ def build_graphs(nodes, ways):
 
 
 def station_networks(stations):
-    """Réseaux pour lesquels calculer les temps : RER, Transilien, métro (toujours), puis les dates d'ouverture
-    du Grand Paris Express qui ont une gare à portée."""
-    gpe = sorted({n for nets in stations.networks for n in nets if n.startswith("gpe")}) if len(stations) else []
-    return list(NETWORKS.values()) + gpe
+    """Réseaux pour lesquels calculer les temps : RER, Transilien, métro (toujours), puis les lignes de
+    tramway, dates d'ouverture du Grand Paris Express et prolongements de tramway qui ont un arrêt à portée."""
+    base = list(NETWORKS.values())
+    other = sorted({n for nets in stations.networks for n in nets if n not in base}) if len(stations) else []
+    return base + other
 
 
 def travel_times(grid, stations, accesses, x, y, graphs, log):
@@ -1093,7 +1116,11 @@ def build_commune(code, log=print):
     for name, arr in layers.items():
         (tmp / f"{name}.bin").write_bytes(np.ascontiguousarray(arr).tobytes())
         meta_layers[name] = {"dtype": str(arr.dtype)}
-    write_pack(tmp, meta_layers)
+    # paquet : couches de base seulement ; celles des tramways et des lignes en projet (extra_networks),
+    # nombreuses autour de Paris, sont chargées une à une par l'application quand on les coche
+    extra = set(station_networks(stations)[len(NETWORKS):])
+    pack = [k for k in meta_layers if layer_network(k) not in extra]
+    write_pack(tmp, pack)
 
     commune.to_file(tmp / "commune.geojson", driver="GeoJSON")
     quart = quartiers(code, row.geometry, lambda m: log(f"{nom} : {m}"))
@@ -1113,12 +1140,14 @@ def build_commune(code, log=print):
         "merc": {"left": grid.left, "top": grid.top, "cell": CELL_M},
         "row_cell_area_m2": grid.row_cell_area_m2(),
         "layers": meta_layers,
+        "pack": pack,  # couches de layers.pack, dans l'ordre ; les autres : <couche>.bin
         "stations": [{"zdc": z, "nom": n, "lignes": list(l), "networks": list(k), **({"date": d} if isinstance(d, str) else {})}
                      for z, n, l, k, d in zip(stations.zdc, stations.nom, stations.lignes, stations.networks,
                                               stations.date)],
         "networks": list(NETWORKS.values()),
-        # dates d'ouverture du Grand Paris Express ayant une gare à portée (couches <mode>_gpeAAAAMMJJ)
-        "gpe": sorted({d for d in stations.date if isinstance(d, str)}),
+        # réseaux en plus de RER, Transilien et métro ayant un arrêt à portée (couches <mode>_<réseau>) :
+        # lignes de tramway, dates d'ouverture du Grand Paris Express et des prolongements de tramway
+        "extra_networks": station_networks(stations)[len(NETWORKS):],
         "modes": TRAVEL_MODES,
         "bike_speed_kmh": BIKE_SPEED_KMH,
         "walk_speed_kmh": WALK_SPEED_KMH,
@@ -1149,13 +1178,24 @@ def build_commune(code, log=print):
 _index_lock = threading.Lock()
 
 
-def gpe_dates():
-    """Dates d'ouverture du Grand Paris Express (curseur de l'application) ; vide si les données manquent."""
+def network_catalog():
+    """Lignes de tramway en service et arrêts en projet par date, pour les choix de l'application :
+    {"trams": ["1", "2", "3a"…], "gpe": [dates], "tram_projects": {ligne: [dates]}} ; listes vides si les
+    données manquent."""
+    out = {"trams": [], "gpe": [], "tram_projects": {}}
     try:
-        return sorted(set(gpe_stations().date))
+        gares, _ = idfm_tables()
+        lines = {rc.split()[1] for m, rc in zip(gares["mode"], gares.res_com) if m in TRAM_MODES}
+        out["trams"] = sorted(lines, key=lambda l: (int(re.match(r"\d+", l).group()), l))
+        proj = project_stations()
+        out["gpe"] = sorted({d for d, n in zip(proj.date, proj.networks) if n[0].startswith("gpe")})
+        for d, n in zip(proj.date, proj.networks):
+            if n[0].startswith("tram"):
+                out["tram_projects"].setdefault(n[0][4:].split("_")[0], set()).add(d)
+        out["tram_projects"] = {l: sorted(v) for l, v in sorted(out["tram_projects"].items())}
     except Exception as e:
-        print(f"gares du Grand Paris Express indisponibles ({e})", flush=True)
-        return []
+        print(f"lignes de tramway ou arrêts en projet indisponibles ({e})", flush=True)
+    return out
 
 
 def update_index():
@@ -1195,7 +1235,7 @@ def update_index():
         tmp = WEB_DATA / f"index.json{suffix}"
         tmp.write_text(json.dumps(
             {"communes": communes, "sources": SOURCES, "durations": DURATIONS_MIN, "air_year": AIR_YEAR,
-             "gpe": gpe_dates()},
+             **network_catalog()},
             ensure_ascii=False))
         os.replace(tmp, WEB_DATA / "index.json")
 
@@ -1209,11 +1249,12 @@ def air_range(layers):
             for pol in AIR_POLLUTANTS if inside.any()}
 
 
-def read_layers(code):
+def read_layers(code, names=None):
+    """meta.json et couches de la commune (toutes, ou celles de names présentes)."""
     d = COMMUNES_DIR / code
     meta = json.loads((d / "meta.json").read_text())
     layers = {name: np.fromfile(d / f"{name}.bin", dtype=info["dtype"]).reshape(meta["height"], meta["width"])
-              for name, info in meta["layers"].items()}
+              for name, info in meta["layers"].items() if names is None or name in names}
     return meta, layers
 
 
@@ -1234,7 +1275,7 @@ def add_missing_air_ranges():
     return n
 
 
-_stats_cache = {}  # code -> (built, cellules de la commune, surfaces, couches restreintes à ces cellules)
+_stats_cache = {}  # code -> (built, cellules de la commune, surfaces, couches déjà lues restreintes à ces cellules)
 
 
 def commune_cells(code):
@@ -1242,20 +1283,30 @@ def commune_cells(code):
     hit = _stats_cache.get(code)
     if hit and hit[0] == built:
         return hit
-    meta, layers = read_layers(code)
+    meta, layers = read_layers(code, {"commune"})
     inside = layers["commune"] > 0
     rows = np.nonzero(inside)[0]
     area = np.asarray(meta["row_cell_area_m2"], dtype="float64")[rows]
-    sub = {k: v[inside] for k, v in layers.items() if k != "commune"}
-    _stats_cache[code] = hit = (built, inside, area, sub)
+    _stats_cache[code] = hit = (built, inside, area, {})
     return hit
+
+
+def cells_layer(code, name):
+    """Couche restreinte aux cellules de la commune, lue à la première demande (les couches des tramways et
+    des lignes en projet ne le sont que si on les coche) ; None si la commune n'a pas cette couche."""
+    built, inside, _, sub = commune_cells(code)
+    if name not in sub:
+        _, layers = read_layers(code, {name})
+        sub[name] = layers[name][inside] if name in layers else None
+    return sub[name]
 
 
 def zone_stats(codes, q):
     """Surfaces (m²) par commune : totale, retenue, et respectant chaque critère pris seul.
     Mêmes règles que l'application (web/app.js, computeCommune)."""
     out = {}
-    nets = [n for n in q.get("networks", []) if n in NETWORKS.values() or re.fullmatch(r"gpe\d{8}", n)]
+    nets = [n for n in q.get("networks", [])
+            if n in NETWORKS.values() or re.fullmatch(r"gpe\d{8}|tram[0-9a-z]+(_\d{8})?", n)]
     mode = q.get("mode", "walk")
     limit = q.get("walk")                      # minutes, ou None sans filtre de temps
     limit_s = limit * 60 + 29 if limit is not None else 65535
@@ -1263,19 +1314,20 @@ def zone_stats(codes, q):
     for code in codes:
         if not (COMMUNES_DIR / code / "meta.json").exists():
             continue
-        _, _, area, v = commune_cells(code)
+        _, _, area, _ = commune_cells(code)
+        v = lambda name: cells_layer(code, name)
         t = np.full(len(area), 65535, "uint16")
         for n in nets:
-            if f"{mode}_{n}" in v:
-                t = np.minimum(t, v[f"{mode}_{n}"])
+            if v(f"{mode}_{n}") is not None:
+                t = np.minimum(t, v(f"{mode}_{n}"))
         walk = t <= limit_s
         airok = np.ones(len(area), bool)
         for pol in AIR_POLLUTANTS:
             if air.get(pol) is not None:
-                airok &= v[pol] <= air[pol] * 10 + 0.5
-        bp = v["bp_noise"] <= q.get("bp", 3)
-        route = v["lden_route"] < q.get("route", 999)
-        fer = v["lden_fer"] < q.get("fer", 999)
+                airok &= v(pol) <= air[pol] * 10 + 0.5
+        bp = v("bp_noise") <= q.get("bp", 3)
+        route = v("lden_route") < q.get("route", 999)
+        fer = v("lden_fer") < q.get("fer", 999)
         ok = walk & airok & bp & route & fer
         out[code] = {"total": float(area.sum()), "ok": float(area[ok].sum()),
                      "crit": {"walk": float(area[walk].sum()), "air": float(area[airok].sum()),
@@ -1352,11 +1404,11 @@ def purge_tiles():
 
 def _global_sources():
     """Sources communes à toutes les communes : (clé, libellé, fichiers en cache)."""
-    idfm = [RAW / f"idfm_gares_{'_'.join(sorted(NETWORKS)).lower()}.geojson",
+    idfm = [RAW / f"idfm_gares_{'_'.join(sorted([*NETWORKS, *TRAM_MODES])).lower()}.geojson",
             RAW / "idfm_acces.csv", RAW / "idfm_relations_acces.csv"]
     return [
         ("idfm", "Gares, stations et accès (IDFM)", idfm),
-        ("gpe", "Gares du Grand Paris Express en projet (IDFM)",
+        ("gpe", "Gares du Grand Paris Express et arrêts de tramway en projet (IDFM)",
          [RAW / "idfm_projets_arrets.geojson", RAW / "idfm_projets_lignes.geojson"]),
         ("communes", "Contours des communes (geo.api.gouv.fr)", [RAW / "idf_communes.gpkg"]),
         ("airbruit", "Indice air-bruit (Bruitparif)", [RAW / "airbruit2024.zip"]),
@@ -1456,7 +1508,7 @@ def refresh_stale(log=print, on_commune=None, max_age_days=MAX_AGE_DAYS):
         if any(s["stale"] for s in report["sources"] if s["key"] in ("idfm", "gpe", "communes", "airbruit", "drieat")):
             log("mise à jour : gares et accès IDFM")
             idfm_tables()
-            gpe_stations()
+            project_stations()
             log("mise à jour : contours des communes")
             idf_communes()
             _idf_cache = None
@@ -1493,10 +1545,16 @@ def refresh_stale(log=print, on_commune=None, max_age_days=MAX_AGE_DAYS):
 PACK_NAME = "layers.pack"  # toutes les couches d'une commune, dans l'ordre de meta["layers"] : une seule requête
 
 
-def write_pack(d, meta_layers):
+def layer_network(name):
+    """Réseau d'une couche de temps ou de gare (« station_walk_tram3a » -> « tram3a »), None sinon."""
+    m = re.fullmatch(r"(?:station_)?(?:walk|bike)_(.+)", name)
+    return m.group(1) if m else None
+
+
+def write_pack(d, names):
     tmp = d / f"{PACK_NAME}.{os.getpid()}.tmp"
     with open(tmp, "wb") as out:
-        for name in meta_layers:
+        for name in names:
             out.write((d / f"{name}.bin").read_bytes())
     os.replace(tmp, d / PACK_NAME)
 
@@ -1508,9 +1566,10 @@ def pack_missing():
         meta_f, pack = d / "meta.json", d / PACK_NAME
         if d.name.startswith(".") or not meta_f.exists():
             continue
-        if not pack.exists() or pack.stat().st_mtime < max((d / f"{k}.bin").stat().st_mtime
-                                                            for k in json.loads(meta_f.read_text())["layers"]):
-            write_pack(d, json.loads(meta_f.read_text())["layers"])
+        meta = json.loads(meta_f.read_text())
+        names = meta.get("pack", list(meta["layers"]))
+        if not pack.exists() or pack.stat().st_mtime < max((d / f"{k}.bin").stat().st_mtime for k in names):
+            write_pack(d, names)
             n += 1
     return n
 

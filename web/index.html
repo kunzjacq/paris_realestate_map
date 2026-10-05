@@ -52,22 +52,37 @@
           <button type="button" data-mode="walk">À pied</button>
           <button type="button" data-mode="bike">À vélo</button>
         </div>
+        <input type="range" id="walk" min="3" max="20" step="1" value="10">
+        <div class="ticks"><span>3</span><span>5</span><span>10</span><span>15</span><span>20 min</span></div>
         <div class="networks">
           <span>Gares :</span>
           <label><input type="checkbox" id="net-rer" checked> <i class="dot rer"></i>RER</label>
           <label><input type="checkbox" id="net-transilien" checked> <i class="dot transilien"></i>Transilien</label>
           <label><input type="checkbox" id="net-metro" checked> <i class="dot metro"></i>Métro</label>
         </div>
+        <div id="tram-box" class="trams" hidden>
+          <button type="button" id="toggle-trams" class="fold" aria-expanded="false" aria-controls="tram-list">
+            <span class="chevron" aria-hidden="true">▾</span><i class="dot tram"></i>Tramways
+            <span class="hint" id="tram-count"></span>
+          </button>
+          <div id="tram-list">
+            <div id="tram-lines" class="tram-lines"></div>
+            <div class="tram-actions">
+              <button type="button" class="btn-link" id="tram-all">Toutes</button>
+              <button type="button" class="btn-link" id="tram-none">Aucune</button>
+            </div>
+          </div>
+        </div>
         <div id="gpe-box" class="gpe" hidden>
-          <label class="check"><input type="checkbox" id="gpe-on"> <i class="dot gpe"></i>Grand Paris Express
-            (lignes 15 à 18) <output id="gpe-out"></output></label>
+          <div class="gpe-title">Lignes en projet <output id="gpe-out"></output></div>
+          <label class="check"><input type="checkbox" id="gpe-on"> <i class="dot gpe"></i>Grand Paris Express (lignes 15 à 18)</label>
+          <label class="check" id="tramproj-label"><input type="checkbox" id="tramproj-on"> <i class="dot tram"></i>Prolongements
+            de tramway (lignes cochées)</label>
           <div id="gpe-controls">
-            <input type="range" id="gpe-date" min="0" max="0" step="1" value="0" aria-label="Date d'ouverture des gares">
+            <input type="range" id="gpe-date" min="0" max="0" step="1" value="0" aria-label="Date d'ouverture des lignes en projet">
             <div class="ticks" id="gpe-ticks"></div>
           </div>
         </div>
-        <input type="range" id="walk" min="3" max="20" step="1" value="10">
-        <div class="ticks"><span>3</span><span>5</span><span>10</span><span>15</span><span>20 min</span></div>
       </div>
     </section>
 
