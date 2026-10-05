@@ -204,7 +204,7 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
 
 ## Dépôt git et données
 
-Le dépôt ne contient que le code. Les données sont hors dépôt (`.gitignore`) :
+Dépôt : https://github.com/kunzjacq/paris_realestate_map. Il ne contient que le code. Les données sont hors dépôt (`.gitignore`) :
 
 | Dossier | Contenu | Taille |
 |---|---|---|
@@ -236,7 +236,7 @@ antérieur.
 Pour repartir d'un clone du dépôt :
 
 ```sh
-git clone <dépôt> immo_map && cd immo_map
+git clone git@github.com:kunzjacq/paris_realestate_map.git immo_map && cd immo_map
 python3 scripts/data_archive.py restore /chemin/immo_map-data-AAAAMMJJ.tar.gz
 ./run.sh                                   # crée l'environnement Python au premier lancement
 ```
