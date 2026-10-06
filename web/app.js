@@ -1074,7 +1074,7 @@ function renderCommuneList(jobStatus = lastStatus) {
   lastStatus = jobStatus;
   const building = new Set();
   if (jobStatus) {
-    if (jobStatus.current) building.add(jobStatus.current.code);
+    (jobStatus.running || []).forEach((r) => building.add(r.code));
     jobStatus.pending.forEach((c) => building.add(c));
   }
   const items = sortedCommunes().map((c) => `
@@ -1241,21 +1241,24 @@ async function pollStatus() {
   if (!serverMode) return;
   let s;
   try { s = await getJSON("api/status"); } catch (e) { pollTimer = setTimeout(pollStatus, 5000); return; }
-  const busy = s.current || s.pending.length;
+  const running = s.running || [];
+  const busy = running.length || s.pending.length;
   const box = $("jobs");
   const errs = Object.entries(s.errors).map(([code, m]) => `<div class="err">Échec ${code} : ${m}</div>`).join("");
   if (busy) {
     box.hidden = false;
-    box.innerHTML = (s.current ? `<div><span class="spin"></span>${s.current.step}</div>` : "") +
+    // constructions en parallèle : les 4 premières, puis leur nombre
+    box.innerHTML = running.slice(0, 4).map((r) => `<div><span class="spin"></span>${r.step}</div>`).join("") +
+      (running.length > 4 ? `<div>+ ${running.length - 4} autre(s) en cours</div>` : "") +
       (s.pending.length ? `<div>${s.pending.length} commune(s) en attente</div>` : "") + errs;
   } else if (errs) {
     box.hidden = false; box.innerHTML = errs;
   } else if (box.querySelector(".spin")) {
     box.hidden = true;
   }
-  const running = (s.current && s.current.code === "__refresh__") || s.pending.includes("__refresh__");
+  const refreshing = running.some((r) => r.code === "__refresh__") || s.pending.includes("__refresh__");
   if (lastVersion !== null && s.version !== lastVersion) { await syncIndex(); loadFreshness(); }
-  if (running !== refreshRunning) { refreshRunning = running; loadFreshness(); }
+  if (refreshing !== refreshRunning) { refreshRunning = refreshing; loadFreshness(); }
   lastVersion = s.version;
   renderCommuneList(s);
   pollTimer = setTimeout(pollStatus, busy ? 1500 : 5000);

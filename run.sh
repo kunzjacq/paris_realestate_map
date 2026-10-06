@@ -1,5 +1,6 @@
 #!/bin/sh
-# Lance l'application sur http://localhost:8000/ (port modifiable : ./run.sh 8080)
+# Lance l'application sur http://localhost:8000/ (port modifiable : ./run.sh 8080 ; nombre de communes
+# construites en parallèle : ./run.sh --jobs 4)
 #
 # Utilise .venv s'il fonctionne avec le Python de cette machine, sinon .venv-local (créé une fois).
 # Les dépendances manquantes (requirements.txt) sont installées automatiquement.
@@ -29,4 +30,4 @@ else
     "$VENV/bin/python" -m pip install --quiet -r requirements.txt
   fi
 fi
-exec "$VENV/bin/python" scripts/server.py "${1:-8000}"
+exec "$VENV/bin/python" scripts/server.py "$@"

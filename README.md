@@ -8,6 +8,7 @@ d'Île-de-France.
 
 ```sh
 ./run.sh            # puis ouvrir http://localhost:8000/   (autre port : ./run.sh 8080)
+./run.sh --jobs 4   # communes construites en parallèle (défaut : un quart des cœurs, 8 au plus)
 ```
 
 `run.sh` choisit un environnement Python, installe les dépendances manquantes puis démarre le serveur
@@ -119,8 +120,14 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
 
 ### File de construction
 
-Les constructions sont traitées une par une par un seul fil d'exécution (elles partagent les caches de
-téléchargement). L'application interroge `/api/status` toutes les 1,5 s pendant une construction (5 s sinon) ;
+Les communes sont construites en parallèle (`--jobs`, défaut `PARALLEL_BUILDS` : un quart des cœurs, 8 au
+plus), chacune dans un processus neuf qui lit la version actuelle de `pipeline.py` ; chaque processus utilise
+sa part des cœurs pour ses recherches spatiales. Les téléchargements de tous les processus sont limités à 2 à
+la fois (`MAX_PARALLEL_DOWNLOADS` : quotas d'Overpass, serveurs Bruitparif et Airparif) ; un fichier
+téléchargé entre-temps par un autre processus n'est pas retéléchargé. `index.json` est mis à jour par le
+serveur, regroupé après les constructions terminées. Un processus mort brutalement (mémoire…) fait échouer
+sa commune ; les processus sont recréés pour les suivantes. Ordres de grandeur (32 cœurs) : 8 communes
+recalculées entièrement en 37 s ; Paris seule en 74 s. L'application interroge `/api/status` toutes les 1,5 s pendant une construction (5 s sinon) ;
 quand le numéro de version change, elle recharge l'index et affiche les communes nouvelles ou reconstruites.
 
 Les couches d'une commune forment cinq groupes, chacun avec son format (`FORMATS` dans `pipeline.py`, à
@@ -191,6 +198,7 @@ seule : pas d'ajout de communes, et les surfaces ne portent que sur les communes
 .venv-local/bin/python scripts/build_data.py 94068 94015    # codes INSEE (ou .venv/bin/python)
 .venv-local/bin/python scripts/build_data.py                # communes présentes
 .venv-local/bin/python scripts/build_data.py --all 94068    # tout recalculer
+.venv-local/bin/python scripts/build_data.py --jobs 4       # communes construites en parallèle (1 : dans ce processus)
 ```
 
 Une commune déjà construite n'est recalculée que pour ses groupes de couches périmés (voir « File de

@@ -17,11 +17,13 @@ Les téléchargements bruts sont mis en cache dans data/raw/ et partagés entre 
 
 import gzip
 import json
+import multiprocessing
 import os
 import re
 import shutil
 import threading
 import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import geopandas as gpd
@@ -126,6 +128,16 @@ SOURCES = {
     "bike": f"Temps à vélo : réseau OpenStreetMap, sens uniques respectés (sauf contresens cyclables), {BIKE_SPEED_KMH} km/h ({BIKE_SLOW_KMH} km/h sur voies piétonnes)",
 }
 
+# Reconstructions en parallèle : un processus par commune (build_many), PARALLEL_BUILDS à la fois ; chacun
+# utilise KD_WORKERS cœurs pour ses recherches spatiales, et les téléchargements de tous les processus sont
+# limités à MAX_PARALLEL_DOWNLOADS (quotas d'Overpass, serveurs Bruitparif et Airparif).
+CPUS = os.cpu_count() or 1
+PARALLEL_BUILDS = min(8, max(1, CPUS // 4))
+MAX_PARALLEL_DOWNLOADS = 2
+KD_WORKERS = CPUS        # processus seul ; dans un processus de build_many : sa part des cœurs
+DOWNLOAD_SEM = None      # sémaphore commun aux processus de build_many (téléchargements)
+_LOG_QUEUE = None        # file des messages des processus de build_many vers le processus principal
+
 _locks = {}
 _locks_guard = threading.Lock()
 
@@ -167,16 +179,24 @@ def cached(path, fetch):
     with lock_for(str(path)):
         refresh = is_stale(path)
         if not path.exists() or refresh:
-            tmp = path.with_name(path.name + f".{os.getpid()}.part")
+            if DOWNLOAD_SEM is not None:
+                DOWNLOAD_SEM.acquire()
             try:
-                tmp.write_bytes(fetch())
-            except Exception as e:
-                tmp.unlink(missing_ok=True)
-                if not refresh:
-                    raise
-                print(f"mise à jour impossible, ancienne version conservée : {path.name} ({e})", flush=True)
-                return path
-            os.replace(tmp, path)
+                if path.exists() and not is_stale(path):
+                    return path  # téléchargé entre-temps par un autre processus
+                tmp = path.with_name(path.name + f".{os.getpid()}.part")
+                try:
+                    tmp.write_bytes(fetch())
+                except Exception as e:
+                    tmp.unlink(missing_ok=True)
+                    if not refresh:
+                        raise
+                    print(f"mise à jour impossible, ancienne version conservée : {path.name} ({e})", flush=True)
+                    return path
+                os.replace(tmp, path)
+            finally:
+                if DOWNLOAD_SEM is not None:
+                    DOWNLOAD_SEM.release()
     return path
 
 
@@ -826,7 +846,8 @@ def travel_times(grid, stations, accesses, x, y, graphs, log, dest_costs=None, n
             reach = node_ids[np.isfinite(dist[node_ids])]
             if len(reach):
                 rtree = cKDTree(np.column_stack([x[reach], y[reach]]))
-                dd, kk = rtree.query(np.column_stack([cxl, cyl]), k=4, distance_upper_bound=MAX_APPROACH_M)
+                dd, kk = rtree.query(np.column_stack([cxl, cyl]), k=4, distance_upper_bound=MAX_APPROACH_M,
+                                     workers=KD_WORKERS)
                 ok = np.isfinite(dd)
                 kk = np.where(ok, kk, 0)
                 tot = np.where(ok, dist[reach[kk]] + dd / approach, np.inf)
@@ -1132,11 +1153,12 @@ def outdated_groups(meta):
     return {g for g, v in FORMATS.items() if group_formats(meta).get(g, 0) < v}
 
 
-def build_commune(code, log=print, groups=None):
+def build_commune(code, log=print, groups=None, index=True):
     """Construit la commune, ou la reconstruit en ne recalculant que les groupes de couches demandés (groups,
     parmi FORMATS ; None : les groupes périmés, ou tous pour une nouvelle commune ; ensemble vide : seulement
     les quartiers et meta.json). Les autres couches sont reprises de la version actuelle ; tout est recalculé
-    si la grille a changé (contour de la commune modifié). Renvoie meta, ou None si rien n'était à refaire."""
+    si la grille a changé (contour de la commune modifié). index : mettre à jour index.json (build_many le
+    fait une fois pour toutes). Renvoie meta, ou None si rien n'était à refaire."""
     row = commune_geom(code)
     nom = row.nom
     commune = gpd.GeoDataFrame([{"code": code, "nom": nom}], geometry=[row.geometry], crs=4326)
@@ -1300,7 +1322,8 @@ def build_commune(code, log=print, groups=None):
         out.rename(old)        # l'ancienne version n'est retirée qu'une fois la nouvelle en place
     tmp.rename(out)
     shutil.rmtree(old, ignore_errors=True)
-    update_index()
+    if index:
+        update_index()
     log(f"{nom} : terminé")
     return meta
 
@@ -1308,6 +1331,76 @@ def build_commune(code, log=print, groups=None):
 # --------------------------------------------------------------------------- index et couches globales
 
 _index_lock = threading.Lock()
+
+
+# --------------------------------------------------------------------------- reconstructions en parallèle
+
+def _init_worker(jobs, log_queue, download_sem):
+    global KD_WORKERS, DOWNLOAD_SEM, _LOG_QUEUE
+    KD_WORKERS = max(1, CPUS // jobs)
+    DOWNLOAD_SEM, _LOG_QUEUE = download_sem, log_queue
+
+
+def _build_task(code, groups, refresh_before=None):
+    """Construction d'une commune dans un processus de build_executor (messages via _LOG_QUEUE) ;
+    refresh_before : REFRESH_BEFORE du processus principal pendant une mise à jour des données anciennes."""
+    global REFRESH_BEFORE
+    REFRESH_BEFORE = refresh_before
+    log = (lambda m: _LOG_QUEUE.put((code, m))) if _LOG_QUEUE is not None else print
+    return build_commune(code, log, groups, index=False) is not None
+
+
+def build_executor(jobs=PARALLEL_BUILDS, log_queue=None):
+    """Processus de construction : un processus neuf par commune (« spawn » : il lit la version actuelle de
+    pipeline.py, même modifiée depuis le lancement du serveur)."""
+    ctx = multiprocessing.get_context("spawn")
+    return ProcessPoolExecutor(max_workers=jobs, mp_context=ctx, max_tasks_per_child=1, initializer=_init_worker,
+                               initargs=(jobs, log_queue, ctx.Semaphore(MAX_PARALLEL_DOWNLOADS)))
+
+
+def build_many(items, jobs=PARALLEL_BUILDS, log=print, on_done=None, executor=None):
+    """Construit les communes items ([(code, groupes)], groupes : voir build_commune) jobs à la fois, puis met à
+    jour index.json. on_done(code, erreur ou None) à chaque commune terminée. Renvoie {code: erreur}."""
+    errors = {}
+    if executor is None and jobs <= 1:
+        for code, groups in items:
+            try:
+                build_commune(code, log, groups, index=False)
+                err = None
+            except Exception as e:
+                err = errors[code] = str(e)
+            if on_done:
+                on_done(code, err)
+        update_index()
+        return errors
+    queue, pump, own = None, None, executor is None
+    if own:
+        queue = multiprocessing.get_context("spawn").Queue()
+        executor = build_executor(jobs, queue)
+
+        def relay():  # messages des processus
+            while (m := queue.get()) is not None:
+                log(m[1])
+        pump = threading.Thread(target=relay, daemon=True)
+        pump.start()
+    try:
+        futures = {executor.submit(_build_task, code, groups, REFRESH_BEFORE): code for code, groups in items}
+        for f in as_completed(futures):
+            code, err = futures[f], None
+            try:
+                f.result()
+            except Exception as e:
+                err = errors[code] = str(e)
+                log(f"{code} : échec ({e})")
+            if on_done:
+                on_done(code, err)
+    finally:
+        if own:
+            executor.shutdown()
+            queue.put(None)
+            pump.join()
+    update_index()
+    return errors
 
 
 def transit_tables(log=print):
@@ -1670,7 +1763,7 @@ def _pending_refresh():
     return pending if isinstance(pending, dict) else {c: sorted(FORMATS) for c in pending}
 
 
-def refresh_stale(log=print, on_commune=None, max_age_days=MAX_AGE_DAYS):
+def refresh_stale(log=print, on_commune=None, max_age_days=MAX_AGE_DAYS, executor=None, jobs=PARALLEL_BUILDS):
     """Retélécharge les données de plus de max_age_days puis reconstruit les communes concernées.
     Chaque fichier est remplacé seulement une fois la nouvelle version complète (cached, is_stale) ;
     chaque commune est reconstruite à côté de l'ancienne version, qui reste servie jusqu'au remplacement."""
@@ -1700,17 +1793,19 @@ def refresh_stale(log=print, on_commune=None, max_age_days=MAX_AGE_DAYS):
                         drieat_layer_gpkg(dep, entry["wfs"], layer, log)
         todo = {c["code"]: c["groups"] for c in report["communes"]}
         REFRESH_STATE.write_text(json.dumps({"pending": todo}))
-        for k, (code, groups) in enumerate(todo.items()):
-            log(f"mise à jour des communes ({k + 1}/{len(todo)})")
-            try:
-                build_commune(code, log, groups=set(groups))  # seulement les couches des sources périmées
-            except Exception as e:  # la commune garde ses anciennes données
-                errors[code] = str(e)
-                continue
-            pending = {c: g for c, g in _pending_refresh().items() if c != code}
-            REFRESH_STATE.write_text(json.dumps({"pending": pending}))
+        done = 0
+
+        def finished(code, err):  # en échec, la commune garde ses anciennes données
+            nonlocal done
+            done += 1
+            log(f"mise à jour des communes ({done}/{len(todo)})")
+            if err is None:
+                pending = {c: g for c, g in _pending_refresh().items() if c != code}
+                REFRESH_STATE.write_text(json.dumps({"pending": pending}))
             if on_commune:
-                on_commune()
+                on_commune(code, err)
+        # seulement les couches des sources périmées
+        errors = build_many([(code, set(groups)) for code, groups in todo.items()], jobs, log, finished, executor)
         if not errors:
             REFRESH_STATE.unlink(missing_ok=True)
     finally:
