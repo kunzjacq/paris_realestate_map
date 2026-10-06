@@ -74,15 +74,19 @@ AIR_YEAR = 2025
 # Formats des données, par groupe de couches : à incrémenter quand le calcul d'un groupe change. Le serveur
 # reconstruit les communes concernées, en ne recalculant que les groupes périmés (les autres couches sont
 # reprises de la version précédente). grille : contour de la commune et grille (tout est recalculé) ;
-# transport : temps de trajet et gares ; air : Airparif ; bruit : Bruitparif et DRIEAT.
-FORMATS = {"grille": 9, "transport": 12, "air": 9, "bruit": 9}
-DATA_FORMAT = max(FORMATS.values())  # format global (meta.json, index.json ; DATA_FORMAT de web/app.js)
+# transport : gares et temps jusqu'à la gare la plus proche de chaque réseau ; destinations : temps porte à
+# porte jusqu'aux destinations (recalculé avec transport : ses couches désignent les gares par leur rang) ;
+# air : Airparif ; bruit : Bruitparif et DRIEAT.
+FORMATS = {"grille": 9, "transport": 12, "destinations": 1, "air": 9, "bruit": 9}
+DATA_FORMAT = 14  # format global (meta.json, index.json ; DATA_FORMAT de web/app.js) : à incrémenter avec FORMATS
 AIR_POLLUTANTS = ["no2", "pm25", "pm10"]
 # réseaux ferrés pris en compte pour le temps de marche : mode IDFM -> clé utilisée dans les données
 NETWORKS = {"RER": "rer", "TRAIN": "transilien", "METRO": "metro"}
 GPE_LINES = {"15", "16", "17", "18"}  # Grand Paris Express : lignes de métro en projet (réseaux « gpeAAAAMMJJ »)
 TRAM_MODES = ("TRAMWAY", "TRAM")     # tramways en service : un réseau par ligne (« tram1 », « tram3a »…)
 NO_STATION = 65535               # indice de gare d'une cellule sans gare atteignable (uint16)
+DEST_MAX_S = 2 * 3600            # temps porte à porte au-delà duquel une destination est jugée hors d'atteinte
+DEST_NONE = 255                  # temps porte à porte (minutes, uint8) d'une cellule hors d'atteinte
 TRAVEL_MODES = ["walk", "bike"]
 MODE_NAMES = {"walk": "à pied", "bike": "à vélo"}
 
@@ -117,6 +121,7 @@ SOURCES = {
     "route": "Bruitparif, carte stratégique de bruit E4 consolidée, bruit routier Lden en 8 classes (MapProxy raster.bruitparif.fr)",
     "lden": "Bruit ferroviaire : Bruitparif, CSB E4 consolidée (8 classes), complétée par la DRIEAT (CSB E4 2022, valeur la plus élevée retenue)",
     "gpe": "Grand Paris Express et prolongements de tramway : arrêts en projet et dates de mise en service estimées (IDFM, projets_arrets_idf et projets_lignes_idf)",
+    "transit": "Temps porte à porte jusqu'à une destination : trajet jusqu'à une gare puis RER, Transilien, métro, tramway ou TER selon les horaires théoriques IDFM d'un mardi (GTFS, offre-horaires-tc-gtfs-idfm), durée médiane des départs de la période",
     "walk": f"Temps à pied : plus court chemin sur le réseau OpenStreetMap jusqu'aux entrées des gares (IDFM), {WALK_SPEED_KMH} km/h",
     "bike": f"Temps à vélo : réseau OpenStreetMap, sens uniques respectés (sauf contresens cyclables), {BIKE_SPEED_KMH} km/h ({BIKE_SLOW_KMH} km/h sur voies piétonnes)",
 }
@@ -780,8 +785,12 @@ def station_networks(stations):
     return base + other
 
 
-def travel_times(grid, stations, accesses, x, y, graphs, log):
-    """Temps (s, uint16, 65535 = hors d'atteinte) et gare (uint8) par cellule, par mode et par réseau."""
+def travel_times(grid, stations, accesses, x, y, graphs, log, dest_costs=None, networks=None):
+    """Par mode : temps (s, uint16, 65535 = hors d'atteinte) jusqu'à la gare la plus proche de chaque réseau et
+    gare correspondante (uint16) ; et pour chaque destination de dest_costs ({clé: durée en transports depuis
+    chaque gare, s, NaN sans horaires}), temps porte à porte (min, uint8, DEST_NONE = hors d'atteinte) =
+    min sur les gares de (trajet jusqu'à la gare + durée en transports), et gare correspondante. networks :
+    réseaux à calculer (par défaut tous ceux des gares ; [] : destinations seulement)."""
     n = len(x)
     cells = np.mgrid[0:grid.height, 0:grid.width]
     cx = grid.left + (cells[1].ravel() + 0.5) * CELL_M
@@ -799,36 +808,54 @@ def travel_times(grid, stations, accesses, x, y, graphs, log):
         main = np.flatnonzero(used & (label == np.bincount(label[used]).argmax()))
         tree = cKDTree(np.column_stack([x[main], y[main]]))
         approach = (WALK_SPEED_KMH if mode == "walk" else BIKE_SLOW_KMH) / 3.6  # du point à la voie la plus proche
-        for net in station_networks(stations):
+
+        def nearest(sel, extra, limit):
+            """Temps (s) et gare de chaque cellule vers les accès sel, chacun avec un coût de départ extra (s)."""
+            t_all = np.full(len(cxl), np.inf)
+            s_all = np.full(len(cxl), NO_STATION, "uint16")
+            if not len(sel):
+                return t_all, s_all
+            # un sommet virtuel par accès : arête voie la plus proche -> accès (coût = approche + extra)
+            d0, k0 = tree.query(np.column_stack([sel.geometry.x, sel.geometry.y]))
+            virt = n + np.arange(len(sel))
+            va = np.concatenate([a, main[k0]]); vb = np.concatenate([b, virt])
+            vw = np.concatenate([w, np.maximum(d0 / approach + extra, 0.01)])
+            g = csr_matrix((vw, (va, vb)), shape=(n + len(sel), n + len(sel)))
+            # temps vers la gare : graphe inversé (sens uniques du vélo)
+            dist, _, src = dijkstra(g.T, indices=virt, min_only=True, return_predecessors=True, limit=limit)
+            reach = node_ids[np.isfinite(dist[node_ids])]
+            if len(reach):
+                rtree = cKDTree(np.column_stack([x[reach], y[reach]]))
+                dd, kk = rtree.query(np.column_stack([cxl, cyl]), k=4, distance_upper_bound=MAX_APPROACH_M)
+                ok = np.isfinite(dd)
+                kk = np.where(ok, kk, 0)
+                tot = np.where(ok, dist[reach[kk]] + dd / approach, np.inf)
+                best = tot.argmin(axis=1)
+                t_all = tot[np.arange(len(tot)), best]
+                station = np.array(sel.station.values)[src[reach[kk[np.arange(len(kk)), best]]] - n]
+                good = t_all <= limit
+                t_all[~good] = np.inf
+                s_all[good] = station[good]
+            return t_all, s_all
+
+        for net in station_networks(stations) if networks is None else networks:
             sel = acc[acc.station.map(lambda si: net in stations.networks.iloc[si])]
-            t_cells = np.full(grid.shape, 65535, "uint16")
-            s_cells = np.full(grid.shape, NO_STATION, "uint16")
-            if len(sel):
-                # un sommet virtuel par accès : arête voie la plus proche -> accès (coût = trajet d'approche)
-                d0, k0 = tree.query(np.column_stack([sel.geometry.x, sel.geometry.y]))
-                virt = n + np.arange(len(sel))
-                va = np.concatenate([a, main[k0]]); vb = np.concatenate([b, virt])
-                vw = np.concatenate([w, np.maximum(d0 / approach, 0.01)])
-                g = csr_matrix((vw, (va, vb)), shape=(n + len(sel), n + len(sel)))
-                # temps vers la gare : graphe inversé (sens uniques du vélo)
-                dist, _, src = dijkstra(g.T, indices=virt, min_only=True, return_predecessors=True,
-                                        limit=MAX_TIME_S)
-                reach = node_ids[np.isfinite(dist[node_ids])]
-                if len(reach):
-                    rtree = cKDTree(np.column_stack([x[reach], y[reach]]))
-                    dd, kk = rtree.query(np.column_stack([cxl, cyl]), k=4, distance_upper_bound=MAX_APPROACH_M)
-                    ok = np.isfinite(dd)
-                    kk = np.where(ok, kk, 0)
-                    tot = np.where(ok, dist[reach[kk]] + dd / approach, np.inf)
-                    best = tot.argmin(axis=1)
-                    t = tot[np.arange(len(tot)), best]
-                    station = np.array(sel.station.values)[src[reach[kk[np.arange(len(kk)), best]]] - n]
-                    good = t <= MAX_TIME_S
-                    t_cells.ravel()[good] = np.round(t[good]).astype("uint16")
-                    s_cells.ravel()[good] = station[good]
-            out[f"{mode}_{net}"] = t_cells
-            out[f"station_{mode}_{net}"] = s_cells
-        log(f"temps de trajet {MODE_NAMES[mode]} calculés")
+            t, st = nearest(sel, 0, MAX_TIME_S)
+            good = np.isfinite(t)
+            t_cells = np.full(len(t), 65535, "uint16")
+            t_cells[good] = np.round(t[good]).astype("uint16")
+            out[f"{mode}_{net}"] = t_cells.reshape(grid.shape)
+            out[f"station_{mode}_{net}"] = st.reshape(grid.shape)
+        for key, cost in (dest_costs or {}).items():
+            extra = cost[acc.station.to_numpy()]
+            ok = np.isfinite(extra)
+            t, st = nearest(acc[ok], extra[ok], DEST_MAX_S)
+            good = np.isfinite(t)
+            t_cells = np.full(len(t), DEST_NONE, "uint8")
+            t_cells[good] = np.minimum(np.round(t[good] / 60), DEST_NONE - 1).astype("uint8")
+            out[f"{mode}_dest_{key}"] = t_cells.reshape(grid.shape)
+            out[f"station_{mode}_dest_{key}"] = st.reshape(grid.shape)
+        log(f"temps {'jusqu’aux destinations' if networks == [] else 'de trajet'} {MODE_NAMES[mode]} calculés")
     return out
 
 
@@ -1081,6 +1108,8 @@ NOISE_LAYERS = ["bp_noise", "bp_air", "lden_route", "lden_fer"]
 
 def layer_group(name):
     """Groupe d'une couche (voir FORMATS)."""
+    if (layer_network(name) or "").startswith("dest_"):
+        return "destinations"
     if layer_network(name):
         return "transport"
     if name in AIR_POLLUTANTS:
@@ -1093,7 +1122,10 @@ def layer_group(name):
 def group_formats(meta):
     """Format de chaque groupe d'une commune construite (meta.json d'avant les formats par groupe : le format
     global vaut pour tous les groupes)."""
-    return meta.get("formats") or {g: meta.get("format", 1) for g in FORMATS}
+    formats = dict(meta.get("formats") or {g: meta.get("format", 1) for g in FORMATS if g != "destinations"})
+    # destinations : groupe séparé de transport après coup ; déjà calculées si la commune en a les couches
+    formats.setdefault("destinations", 1 if meta.get("destinations") else 0)
+    return formats
 
 
 def outdated_groups(meta):
@@ -1122,6 +1154,8 @@ def build_commune(code, log=print, groups=None):
     groups = set(groups)
     if not same_grid or "grille" in groups:
         groups = set(FORMATS)
+    if "transport" in groups:  # rang des gares changé : couches des destinations à refaire
+        groups.add("destinations")
     reuse = [k for k in (old_meta or {}).get("layers", {}) if layer_group(k) not in groups]
     log(f"{nom} : préparation" + ("" if groups == set(FORMATS) else
                                    f" (recalcul : {', '.join(sorted(groups)) or 'quartiers seulement'})"))
@@ -1133,23 +1167,49 @@ def build_commune(code, log=print, groups=None):
     if "transport" in groups:
         stations, accesses = stations_near(commune_l93)
         log(f"{nom} : {len(stations)} gares, {len(accesses)} accès")
-        # Temps de trajet réels jusqu'à la gare la plus proche, par mode (marche, vélo) et par réseau ;
-        # l'application combine les réseaux choisis pour le mode choisi.
+    elif "destinations" in groups:
+        # gares et accès de la version actuelle : les couches reprises désignent les gares par leur rang
+        stations = pd.DataFrame(old_meta["stations"])
+        rank = {z: i for i, z in enumerate(stations.zdc)}
+        accesses = gpd.read_file(out / "acces.geojson").to_crs(2154)
+        accesses["station"] = accesses.zdc.map(rank)
+    if "transport" in groups or "destinations" in groups:
         x, y, graphs = build_graphs(*load_osm(osm_bounds(commune_l93), lambda m: log(f"{nom} : {m}")))
+        # temps porte à porte jusqu'aux destinations : durée en transports depuis chaque gare (horaires IDFM)
+        transit = transit_tables(lambda m: log(f"{nom} : {m}"))
+        dest_costs, station_transit = {}, [{} for _ in range(len(stations))]
+        for dk, per in (transit["tables"] if transit else {}).items():
+            for pk, table in per.items():
+                key = f"{dk}_{pk}"
+                dest_costs[key] = np.array([table[z]["median"] * 60 if z in table else np.nan for z in stations.zdc])
+                for i, z in enumerate(stations.zdc):
+                    if z in table:
+                        station_transit[i][key] = [table[z]["median"], table[z]["line"]]
         if len(stations):
-            layers.update(travel_times(grid, stations, accesses, x, y, graphs, lambda m: log(f"{nom} : {m}")))
-        else:
+            # Temps de trajet réels jusqu'à la gare la plus proche, par mode (marche, vélo) et par réseau
+            # (l'application combine les réseaux choisis pour le mode choisi), et jusqu'aux destinations
+            layers.update(travel_times(grid, stations, accesses, x, y, graphs, lambda m: log(f"{nom} : {m}"),
+                                       dest_costs, networks=None if "transport" in groups else []))
+        elif "transport" in groups:
             for mode in TRAVEL_MODES:
                 for net in NETWORKS.values():
                     layers[f"{mode}_{net}"] = np.full(grid.shape, 65535, "uint16")
                     layers[f"station_{mode}_{net}"] = np.full(grid.shape, NO_STATION, "uint16")
+        destinations = sorted(dest_costs) if len(stations) else []
+    else:
+        destinations = old_meta.get("destinations", [])
+    if "transport" in groups:
+        # transit : {destination_période: [durée médiane en transports (min), ligne prise au départ]}
         station_meta = [{"zdc": z, "nom": n, "lignes": list(l), "networks": list(k),
-                         **({"date": d} if isinstance(d, str) else {})}
-                        for z, n, l, k, d in zip(stations.zdc, stations.nom, stations.lignes, stations.networks,
-                                                 stations.date)]
+                         **({"date": d} if isinstance(d, str) else {}), **({"transit": tr} if tr else {})}
+                        for z, n, l, k, d, tr in zip(stations.zdc, stations.nom, stations.lignes, stations.networks,
+                                                     stations.date, station_transit)]
         extra_networks = station_networks(stations)[len(NETWORKS):]
     else:
         station_meta = old_meta["stations"]
+        if "destinations" in groups:
+            station_meta = [{**{k: v for k, v in st.items() if k != "transit"}, **({"transit": tr} if tr else {})}
+                            for st, tr in zip(station_meta, station_transit)]
         extra_networks = old_meta.get("extra_networks", [])
 
     if "air" in groups:
@@ -1181,9 +1241,10 @@ def build_commune(code, log=print, groups=None):
         else:
             (tmp / f"{name}.bin").write_bytes(np.ascontiguousarray(arr).tobytes())
         meta_layers[name] = {"dtype": str(arr.dtype)}
-    # paquet : couches de base seulement ; celles des tramways et des lignes en projet (extra_networks),
-    # nombreuses autour de Paris, sont chargées une à une par l'application quand on les coche
-    pack = [k for k in meta_layers if layer_network(k) not in set(extra_networks)]
+    # paquet : couches de base seulement ; celles des tramways, des lignes en projet (extra_networks) et des
+    # destinations, nombreuses, sont chargées une à une par l'application quand on les choisit
+    pack = [k for k in meta_layers if layer_network(k) not in set(extra_networks)
+            and not (layer_network(k) or "").startswith("dest_")]
     write_pack(tmp, pack)
 
     commune.to_file(tmp / "commune.geojson", driver="GeoJSON")
@@ -1201,7 +1262,7 @@ def build_commune(code, log=print, groups=None):
             shutil.copy2(out / f, tmp / f)
 
     dep = row.codeDepartement
-    formats = {g: (FORMATS[g] if g in groups else group_formats(old_meta)[g]) for g in FORMATS}
+    formats = {g: (FORMATS[g] if g in groups else group_formats(old_meta).get(g, 0)) for g in FORMATS}
     meta = {
         # format global : DATA_FORMAT si tous les groupes sont à jour (l'application signale les autres)
         "format": DATA_FORMAT if all(formats[g] >= v for g, v in FORMATS.items()) else min(formats.values()),
@@ -1217,6 +1278,8 @@ def build_commune(code, log=print, groups=None):
         # réseaux en plus de RER, Transilien et métro ayant un arrêt à portée (couches <mode>_<réseau>) :
         # lignes de tramway, dates d'ouverture du Grand Paris Express et des prolongements de tramway
         "extra_networks": extra_networks,
+        # destinations_périodes ayant des couches de temps porte à porte (<mode>_dest_<destination>_<période>)
+        "destinations": destinations,
         "modes": TRAVEL_MODES,
         "bike_speed_kmh": BIKE_SPEED_KMH,
         "walk_speed_kmh": WALK_SPEED_KMH,
@@ -1247,11 +1310,21 @@ def build_commune(code, log=print, groups=None):
 _index_lock = threading.Lock()
 
 
+def transit_tables(log=print):
+    """Durées en transports jusqu'aux destinations (scripts/transit.py) ; None si les horaires manquent."""
+    try:
+        import transit
+        return transit.transit_tables(log)
+    except Exception as e:
+        log(f"horaires des transports indisponibles ({e})")
+        return None
+
+
 def network_catalog():
     """Lignes de tramway en service et arrêts en projet par date, pour les choix de l'application :
     {"trams": ["1", "2", "3a"…], "gpe": [dates], "tram_projects": {ligne: [dates]}} ; listes vides si les
     données manquent."""
-    out = {"trams": [], "gpe": [], "tram_projects": {}}
+    out = {"trams": [], "gpe": [], "tram_projects": {}, "destinations": {}, "periods": {}, "transit_day": None}
     try:
         gares, _ = idfm_tables()
         lines = {rc.split()[1] for m, rc in zip(gares["mode"], gares.res_com) if m in TRAM_MODES}
@@ -1262,6 +1335,9 @@ def network_catalog():
             if n[0].startswith("tram"):
                 out["tram_projects"].setdefault(n[0][4:].split("_")[0], set()).add(d)
         out["tram_projects"] = {l: sorted(v) for l, v in sorted(out["tram_projects"].items())}
+        transit = transit_tables(lambda m: None)
+        if transit:
+            out.update(destinations=transit["destinations"], periods=transit["periods"], transit_day=transit["day"])
     except Exception as e:
         print(f"lignes de tramway ou arrêts en projet indisponibles ({e})", flush=True)
     return out
@@ -1397,11 +1473,16 @@ def zone_stats(codes, q):
         bp = v("bp_noise") <= q.get("bp", 3)
         route = v("lden_route") < q.get("route", 999)
         fer = v("lden_fer") < q.get("fer", 999)
-        ok = walk & airok & bp & route & fer
+        dest = np.ones(len(area), bool)
+        if q.get("dest") and re.fullmatch(r"[a-z_]+", f"{q['dest']}_{q.get('period', '')}"):
+            layer = v(f"{mode}_dest_{q['dest']}_{q.get('period')}")
+            if layer is not None:
+                dest = layer <= q.get("dest_max", 60)
+        ok = walk & airok & bp & route & fer & dest
         out[code] = {"total": float(area.sum()), "ok": float(area[ok].sum()),
                      "crit": {"walk": float(area[walk].sum()), "air": float(area[airok].sum()),
                               "bp": float(area[bp].sum()), "route": float(area[route].sum()),
-                              "fer": float(area[fer].sum())}}
+                              "fer": float(area[fer].sum()), "dest": float(area[dest].sum())}}
     return out
 
 
@@ -1477,6 +1558,7 @@ def _global_sources():
             RAW / "idfm_acces.csv", RAW / "idfm_relations_acces.csv"]
     return [
         ("idfm", "Gares, stations et accès (IDFM)", idfm),
+        ("transit", "Horaires des transports (IDFM, GTFS)", [RAW / "idfm_gtfs.zip"]),
         ("gpe", "Gares du Grand Paris Express et arrêts de tramway en projet (IDFM)",
          [RAW / "idfm_projets_arrets.geojson", RAW / "idfm_projets_lignes.geojson"]),
         ("communes", "Contours des communes (geo.api.gouv.fr)", [RAW / "idf_communes.gpkg"]),
@@ -1505,7 +1587,7 @@ def _commune_files(code):
 
 # groupes de couches à recalculer quand une source a plus de MAX_AGE_DAYS (None : quartiers seulement,
 # refaits à chaque reconstruction ; "*" : tout, la grille pouvant changer)
-SOURCE_GROUPS = {"idfm": "transport", "gpe": "transport", "communes": "*", "airbruit": "bruit", "drieat": "bruit",
+SOURCE_GROUPS = {"idfm": "transport", "gpe": "transport", "transit": "destinations", "communes": "*", "airbruit": "bruit", "drieat": "bruit",
                  "osm": "transport", "airparif": "air", "bruit_route": "bruit", "bruit_fer": "bruit",
                  "quartiers": None, "iris": None}
 
@@ -1600,10 +1682,11 @@ def refresh_stale(log=print, on_commune=None, max_age_days=MAX_AGE_DAYS):
     REFRESH_BEFORE = time.time() - max_age_days * 86400
     errors = {}
     try:
-        if any(s["stale"] for s in report["sources"] if s["key"] in ("idfm", "gpe", "communes", "airbruit", "drieat")):
+        if any(s["stale"] for s in report["sources"] if s["key"] in ("idfm", "gpe", "transit", "communes", "airbruit", "drieat")):
             log("mise à jour : gares et accès IDFM")
             idfm_tables()
             project_stations()
+            transit_tables(log)  # horaires retéléchargés (cached) : nouvelles tables pour un nouveau jour
             log("mise à jour : contours des communes")
             idf_communes()
             _idf_cache = None

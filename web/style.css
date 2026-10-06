@@ -119,6 +119,8 @@ select { width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--l
 .gpe-title output { color: var(--ink); }
 .gpe .check { display: flex; align-items: center; gap: 5px; margin-top: 4px; }
 #gpe-controls.off { opacity: .45; }
+#dest-controls.off { opacity: .4; pointer-events: none; }
+#dest-note { margin: 6px 0 0; }
 .gpe .check.muted { opacity: .55; }  /* prolongements de tramway sans ligne cochée */
 .trams { margin: 0 0 8px; }
 .trams .fold { gap: 5px; }
@@ -192,6 +194,8 @@ body.panel-hidden #panel, body.panel-hidden #resizer { display: none; }
 .hover-box .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: 0; background: #ddd; }
 .hover-box table.noise tr.fail td { color: #b42318; font-weight: 600; }
 .hover-box .verdict { margin-top: 5px; padding-top: 4px; border-top: 1px solid var(--line); }
+.hover-box .dest { margin-top: 5px; padding-top: 4px; border-top: 1px solid var(--line); }
+.hover-box .dest.fail strong { color: #b42318; }
 .hover-box .verdict.ok { color: var(--accent); font-weight: 600; }
 .hover-box .verdict ul { margin: 2px 0 0; padding-left: 16px; }
 .hover-box .verdict li { margin: 1px 0; }

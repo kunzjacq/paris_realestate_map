@@ -86,6 +86,23 @@
       </div>
     </section>
 
+    <section id="dest-section" hidden>
+      <h2>Trajet jusqu'à une destination <output id="dest-out"></output></h2>
+      <label class="field">
+        <span>Destination (porte à porte, en semaine)</span>
+        <select id="dest"><option value="">Aucune : pas de filtre</option></select>
+      </label>
+      <div id="dest-controls">
+        <div class="seg" id="dest-period" role="group" aria-label="Période">
+          <button type="button" data-period="pointe">Pointe du matin</button>
+          <button type="button" data-period="journee">Milieu de journée</button>
+        </div>
+        <input type="range" id="dest-max" min="15" max="90" step="5" value="45" aria-label="Durée maximale">
+        <div class="ticks" id="dest-ticks"><span>15</span><span>30</span><span>45</span><span>60</span><span>75</span><span>90 min</span></div>
+        <p class="note" id="dest-note"></p>
+      </div>
+    </section>
+
     <section>
       <h2>Pollution de l'air <span class="hint" id="air-year"></span></h2>
       <div id="air-sliders"></div>
@@ -137,6 +154,7 @@
         <select id="context">
           <option value="none">Aucune</option>
           <option value="walk">Temps de trajet</option>
+          <option value="dest">Temps jusqu'à la destination</option>
           <option value="no2">NO₂</option>
           <option value="pm25">PM2.5</option>
           <option value="pm10">PM10</option>

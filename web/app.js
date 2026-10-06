@@ -11,6 +11,7 @@ const COLORS = {
   zone: [26, 127, 90],
   zoneEdge: [12, 80, 55],
   walk: { 5: "#08519c", 10: "#4292c6", 15: "#9ecae1", 20: "#deebf7" },
+  dest: { 20: "#08519c", 30: "#2171b5", 45: "#6baed6", 60: "#bdd7e7", 90: "#eff3ff", 120: "#f2e6d9" },
   bp_noise: { 1: "#a6d96a", 2: "#fdd049", 3: "#d7301f" },
   // couleurs de la légende Bruitparif (40 = moins de 45 dB)
   lden_route: { 40: "#4bc700", 45: "#53fd00", 50: "#b7fd72", 55: "#fcfd00", 60: "#fda900", 65: "#fd0000", 70: "#d300fc", 75: "#950064" },
@@ -29,7 +30,7 @@ const NEAR_STATIONS = 3;  // lieux affichés : les plus proches de la souris
 // est souvent placée un peu à l'écart de la gare existante (Issy RER à 236 m de Issy) : seuil plus large
 const SAME_PLACE_M = 150, SAME_PLACE_PROJECT_M = 300;
 const isProject = (l) => /^gpe|_\d{8}/.test(l.feature.properties.networks || "");
-const DATA_FORMAT = 12;  // doit suivre DATA_FORMAT de scripts/pipeline.py
+const DATA_FORMAT = 14;  // doit suivre DATA_FORMAT de scripts/pipeline.py
 const MODE_LABELS = { walk: "À pied", bike: "À vélo" };
 const UNREACHED = 65535;  // temps (s) d'une cellule hors d'atteinte
 // classe Lden (borne basse ; 40 = moins de 45 dB ; 0 = non renseigné) -> libellé
@@ -51,6 +52,9 @@ const state = {
   gpe: false,          // gares du Grand Paris Express en projet prises en compte
   tramProjects: false, // arrêts en projet des lignes de tramway cochées pris en compte
   gpeDate: null,       // … lignes en projet ouvertes au plus tard à cette date (AAAA-MM-JJ, parmi projectDates())
+  dest: "",            // destination (clé de index.destinations) ; vide : pas de critère
+  period: "pointe",    // période des horaires (clé de index.periods)
+  destMax: 45,         // durée porte à porte maximale (min)
   air: {},             // seuils en µg/m³ ; absent = pas de filtre
   bpNoise: 3,
   ldenRoute: 999,
@@ -152,7 +156,8 @@ async function loadCommuneData(c) {
 // une pour les réseaux cochés (les deux modes : l'encadré de survol donne le temps à pied et à vélo)
 async function ensureNetworkLayers(c) {
   const base = `data/communes/${c.code}/`;
-  const names = selectedNetworks().flatMap((net) => ["walk", "bike"].flatMap((m) => [`${m}_${net}`, `station_${m}_${net}`]))
+  const nets = [...selectedNetworks(), ...(destKey() ? [`dest_${destKey()}`] : [])];
+  const names = nets.flatMap((net) => ["walk", "bike"].flatMap((m) => [`${m}_${net}`, `station_${m}_${net}`]))
     .filter((name) => c.meta.layers[name] && !c.L[name] && !(c.fetching ||= new Set()).has(name));
   if (!names.length) return;
   names.forEach((name) => c.fetching.add(name));
@@ -170,7 +175,7 @@ async function ensureNetworkLayers(c) {
   }
   if (communes.get(c.code) !== c) return;
   combineWalk(c);
-  update({ context: state.context === "walk" });
+  update({ context: state.context === "walk" || state.context === "dest" });
 }
 
 // charge les communes visibles (avec une marge) pas encore chargées, puis les dessine.
@@ -388,6 +393,77 @@ function combineWalk(c) {
   }
   c.walkSel = walk; c.stationSel = station;
   c.isoKey = null;
+  combineDest(c);
+}
+
+// ------------------------------------------------------------------ destination
+// temps porte à porte (min, uint8, DEST_NONE hors d'atteinte) pour la destination, la période et le mode choisis ;
+// null sans destination, ou tant que la couche n'est pas chargée (pas de filtre)
+const DEST_NONE = 255;
+const destKey = () => state.dest && index?.destinations?.[state.dest] ? `${state.dest}_${state.period}` : null;
+const destName = () => index?.destinations?.[state.dest] || "";
+
+function combineDest(c) {
+  const key = destKey(), mode = state.travelMode;
+  c.destSel = key ? c.L[`${mode}_dest_${key}`] || null : null;
+  c.destStation = key ? c.L[`station_${mode}_dest_${key}`] || null : null;
+}
+
+// ligne GTFS (« A », « N », « 14 », « T3a », « TER ») -> libellé de l'application
+function transitLine(l) {
+  if (!l) return "";
+  if (/^[A-E]$/.test(l)) return `RER ${l}`;
+  if (/^[A-Z]$/.test(l)) return `Transilien ${l}`;
+  if (/^\d+(bis)?$/.test(l)) return `Métro ${l}`;
+  if (/^T\d/.test(l)) return `Tram ${l}`;
+  return l;
+}
+
+const destBin = (m) => m === DEST_NONE ? 0 : [20, 30, 45, 60, 90].find((b) => m <= b) || 120;
+
+function buildDest() {
+  const dests = index.destinations || {}, periods = index.periods || {};
+  $("dest-section").hidden = !Object.keys(dests).length;
+  if (state.dest && !dests[state.dest]) state.dest = "";
+  if (!periods[state.period]) state.period = Object.keys(periods)[0] || "pointe";
+  $("dest").innerHTML = '<option value="">Aucune : pas de filtre</option>'
+    + Object.entries(dests).map(([k, n]) => `<option value="${k}">${n}</option>`).join("");
+  $("dest").value = state.dest;
+  $("dest-period").querySelectorAll("button").forEach((b) => { b.title = periods[b.dataset.period] || ""; });
+  showDest();
+}
+
+function showDest() {
+  const on = !!destKey();
+  $("dest-out").textContent = on ? `≤ ${state.destMax} min` : "";
+  $("dest-controls").classList.toggle("off", !on);
+  $("dest-period").querySelectorAll("button").forEach((b) =>
+    b.setAttribute("aria-pressed", String(b.dataset.period === state.period)));
+  $("dest-max").value = state.destMax;
+  const day = index.transit_day ? new Date(index.transit_day).toLocaleDateString("fr-FR",
+    { weekday: "long", day: "numeric", month: "long", year: "numeric" }) : "";
+  $("dest-note").textContent = `${index.periods?.[state.period] || ""} : trajet ${state.travelMode === "bike" ? "à vélo"
+    : "à pied"} jusqu'à une gare (mode choisi ci-dessus), puis RER, Transilien, métro, tram ou TER ; durée médiane des `
+    + `départs de la période, horaires IDFM du ${day}. Lignes en projet non comprises.`;
+}
+
+function destChanged() {
+  showDest();
+  for (const c of loadedCommunes()) { combineDest(c); ensureNetworkLayers(c); }
+  update({ context: state.context === "dest" });
+}
+
+function initDest() {
+  $("dest").addEventListener("change", () => { state.dest = $("dest").value; destChanged(); });
+  $("dest-period").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b || b.dataset.period === state.period) return;
+    state.period = b.dataset.period; destChanged();
+  });
+  const range = $("dest-max"), [lo, hi] = [+range.min, +range.max];
+  $("dest-ticks").querySelectorAll("span").forEach((t) => {
+    t.style.left = `${100 * (parseInt(t.textContent) - lo) / (hi - lo)}%`;
+  });
+  range.addEventListener("input", () => { state.destMax = +range.value; showDest(); scheduleUpdate(); });
 }
 
 // indices et surfaces (m²) des cellules de la commune, calculés une fois
@@ -441,6 +517,7 @@ async function syncIndex() {
   }
   renderCommuneList();
   buildAirSliders();
+  buildDest();
   buildTramList();
   buildGpeSlider();
   renderSources();
@@ -603,7 +680,8 @@ function initMap() {
 
 function thresholds() {
   // temps en secondes ; sans filtre, même les cellules hors d'atteinte passent
-  const t = { walk: state.walkFilter ? limitSec(state.walk) : UNREACHED, bp: state.bpNoise, route: state.ldenRoute, fer: state.ldenFer };
+  const t = { walk: state.walkFilter ? limitSec(state.walk) : UNREACHED, bp: state.bpNoise, route: state.ldenRoute, fer: state.ldenFer,
+    dest: destKey() ? state.destMax : DEST_NONE };
   for (const a of AIR) t[a.key] = (state.air[a.key] ?? Infinity) * 10 + 0.5;  // dixièmes de µg/m³
   return t;
 }
@@ -618,6 +696,7 @@ function cellPasses(c, i, t = thresholds()) {
     bp: v.bp_noise[i] <= t.bp,     // 0 = non renseigné, accepté
     route: v.lden_route[i] < t.route,  // 0 = non renseigné, accepté ; 40 = moins de 45 dB
     fer: v.lden_fer[i] < t.fer,        // 0 = non renseigné, accepté ; 40 = moins de 45 dB
+    dest: !c.destSel || c.destSel[i] <= t.dest,  // couche pas encore chargée : pas de filtre
   };
 }
 
@@ -626,22 +705,24 @@ function computeCommune(c, t) {
   const v = c.L, idx = c.cellIdx, area = c.cellArea, walk = c.walkSel;
   const { no2, pm25, pm10, bp_noise: bpn, lden_route: route, lden_fer: fer } = v;
   const tw = t.walk, tn = t.no2, t25 = t.pm25, t10 = t.pm10, tb = t.bp, tr = t.route, tf = t.fer;
+  const dest = c.destSel || (c.noDest ||= new Uint8Array(W * H)), td = c.destSel ? t.dest : DEST_NONE;
   const match = new Uint8Array(W * H);
-  let total = 0, ok = 0, cWalk = 0, cAir = 0, cBp = 0, cRoute = 0, cFer = 0;
+  let total = 0, ok = 0, cWalk = 0, cAir = 0, cBp = 0, cRoute = 0, cFer = 0, cDest = 0;
   for (let k = 0; k < idx.length; k++) {   // cellules de la commune seulement
     const i = idx[k], a = area[k];
     const w = walk[i] <= tw;
     const ai = no2[i] <= tn && pm25[i] <= t25 && pm10[i] <= t10;
-    const bp = bpn[i] <= tb, ro = route[i] < tr, fe = fer[i] < tf;
+    const bp = bpn[i] <= tb, ro = route[i] < tr, fe = fer[i] < tf, de = dest[i] <= td;
     total += a;
     if (w) cWalk += a;
     if (ai) cAir += a;
     if (bp) cBp += a;
     if (ro) cRoute += a;
     if (fe) cFer += a;
-    if (w && ai && bp && ro && fe) { match[i] = 1; ok += a; }
+    if (de) cDest += a;
+    if (w && ai && bp && ro && fe && de) { match[i] = 1; ok += a; }
   }
-  return { match, total, ok, crit: { walk: cWalk, air: cAir, bp: cBp, route: cRoute, fer: cFer } };
+  return { match, total, ok, crit: { walk: cWalk, air: cAir, bp: cBp, route: cRoute, fer: cFer, dest: cDest } };
 }
 
 // ------------------------------------------------------------------ rendu
@@ -850,7 +931,7 @@ function drawContext(only = null) {
   for (const c of only ? [only] : loadedCommunes()) {
     if (key === "none") { c.context.setUrl(EMPTY_PNG); continue; }
     const colorOf = contextColorFn(key), mask = c.L.commune;
-    const src = key === "walk" ? c.walkSel.map(walkBin) : c.L[key];
+    const src = key === "walk" ? c.walkSel.map(walkBin) : key === "dest" ? (c.destSel || new Uint8Array(c.L.commune.length).fill(DEST_NONE)).map(destBin) : c.L[key];
     c.context.setUrl(paint(c, (d, W, H) => {
       for (let i = 0; i < W * H; i++) {
         if (!mask[i]) continue;   // chaque grille ne peint que sa commune : pas de double couche aux bords
@@ -872,7 +953,8 @@ function renderLegend() {
       <div class="ends"><span>${fmt(min)} µg/m³</span><span>${fmt(max)} µg/m³</span></div>`;
     return;
   }
-  const label = key === "walk" ? (k) => `≤ ${k} min` : key === "bp_noise" ? (k) => BP_NOISE_LABELS[k]
+  const label = key === "walk" ? (k) => `≤ ${k} min` : key === "dest" ? (k) => +k === 120 ? "> 90 min" : `≤ ${k} min`
+    : key === "bp_noise" ? (k) => BP_NOISE_LABELS[k]
     : (k) => +k === 40 ? "< 45 dB" : +k === 75 ? "≥ 75" : `${k}–${+k + 5}`;
   legend.innerHTML = Object.entries(COLORS[key]).map(([k, h]) =>
     `<span><i class="sw" style="background:${h}"></i>${label(k)}</span>`).join("");
@@ -903,15 +985,16 @@ function renderResult(results) {
   const active = sortedCommunes().filter((c) => isActive(c.code));
   if (!active.length) { $("result").innerHTML = '<p class="note">Aucune commune sélectionnée.</p>'; return; }
   let total = 0, ok = 0;
-  const crit = { walk: 0, air: 0, route: 0, fer: 0, bp: 0 };
+  const crit = { walk: 0, air: 0, route: 0, fer: 0, bp: 0, dest: 0 };
   const missing = active.filter((c) => !results.has(c.code));
   const rows = active.filter((c) => results.has(c.code)).map((c) => {
     const r = results.get(c.code);
     total += r.total; ok += r.ok;
-    for (const k in crit) crit[k] += r.crit[k];
+    for (const k in crit) crit[k] += r.crit[k] ?? r.total;
     return `<span>${c.meta.nom}</span><span>${km2(r.ok)} km²</span><span class="muted">${pct(r.ok, r.total)} %</span>`;
   }).join("");
-  const critTxt = [["Marche", crit.walk], ["Air", crit.air], ["Bruit routier", crit.route], ["Bruit ferroviaire", crit.fer], ["Indice global", crit.bp]]
+  const critTxt = [["Marche", crit.walk], ["Air", crit.air], ["Bruit routier", crit.route], ["Bruit ferroviaire", crit.fer],
+    ["Indice global", crit.bp], ...(destKey() ? [[destName(), crit.dest]] : [])]
     .map(([n, a]) => `${n} ${pct(a, total)} %`).join(" · ");
   $("result").innerHTML = `
     <div class="big">${km2(ok)} km² <small>soit ${pct(ok, total)} % de la surface</small></div>
@@ -963,6 +1046,7 @@ function requestStats() {
       codes: [...communes.keys()].filter(isActive), mode: state.travelMode, networks: selectedNetworks(),
       walk: state.walkFilter ? state.walk : null, air: state.air, bp: state.bpNoise,
       route: state.ldenRoute, fer: state.ldenFer,
+      dest: destKey() ? state.dest : null, period: state.period, dest_max: state.destMax,
     };
     try {
       const r = await fetch("api/stats", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1251,6 +1335,10 @@ function exclusionHtml(c, i, ok) {
   for (const a of AIR) {
     if (!ok[a.key]) reasons.push(`${a.label} ${fmt(v[a.key][i] / 10)} µg/m³ <span class="muted">(seuil ${fmt(state.air[a.key])})</span>`);
   }
+  if (!ok.dest) {
+    const m = c.destSel[i];
+    reasons.push(`${destName()} ${m === DEST_NONE ? "à plus de 2 h" : `en ${m} min`} <span class="muted">(seuil ${state.destMax} min)</span>`);
+  }
   if (!reasons.length) return '<div class="verdict ok">✓ Dans la zone retenue</div>';
   return `<div class="verdict"><span class="ko">✗ Exclu :</span><ul>${reasons.map((r) => `<li>${r}</li>`).join("")}</ul></div>`;
 }
@@ -1281,6 +1369,15 @@ function renderHover() {
     return `<tr class="${m === mode ? "cur" : ""}"><td>${MODE_LABELS[m]}</td><td>${time}${other}</td></tr>`;
   }).join("");
   html += `<table>${rows}</table>`;
+  // destination : durée porte à porte et gare de départ
+  if (destKey() && c.destSel) {
+    const m = c.destSel[i], si = c.destStation ? c.destStation[i] : NO_STATION;
+    const st = si < c.meta.stations.length ? c.meta.stations[si] : null;
+    const tr = st?.transit?.[destKey()];
+    html += `<div class="dest${cellPasses(c, i).dest ? "" : " fail"}">${destName()} : <strong>${m === DEST_NONE ? "plus de 2 h" : `${m} min`}</strong>`
+      + (st && m !== DEST_NONE ? `<br><span class="muted">via ${st.nom}${tr?.[1] ? ` (${transitLine(tr[1])}, ${Math.round(tr[0])} min)` : ""}</span>` : "")
+      + "</div>";
+  }
   // niveaux de bruit au point survolé, pastille aux couleurs de la légende
   const v = c.L;
   const sw = (key, x) => COLORS[key][x] ? `<i class="sw" style="background:${COLORS[key][x]}"></i>` : '<i class="sw"></i>';
@@ -1418,7 +1515,8 @@ function initControls() {
     state.walk = walk.value = state.limits[state.travelMode];  // seuil propre au mode
     showWalk();
     for (const c of loadedCommunes()) combineWalk(c);
-    update({ context: state.context === "walk" });
+    showDest();
+    update({ context: state.context === "walk" || state.context === "dest" });
   });
   showMode();
   for (const net of Object.keys(state.networks)) {
@@ -1459,6 +1557,7 @@ function initControls() {
   quartiersBox.checked = state.showQuartiers;
   quartiersBox.addEventListener("change", () => { state.showQuartiers = quartiersBox.checked; saveState(); showQuartiers(); });
   initGoto();
+  initDest();
   makeFoldable("toggle-result", $("result"), "immo_map.resultFolded", "la zone retenue");
   initCommuneList();
 }

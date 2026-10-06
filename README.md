@@ -32,9 +32,10 @@ l'autre (navigateur), comme la dernière vue de la carte.
 | Aller à | commune chargée (complétion, « st » vaut « saint »), puis quartier dans la liste déroulante : la carte se centre sur la commune dès qu'elle est choisie, puis sur le quartier |
 | Communes | liste repliable (clic sur le titre) : case pour inclure ou non la commune, centrage, retrait ; recherche, « Ajouter les communes visibles », suivi des constructions. « ⚠ route » / « ⚠ fer » : bruit connu sur moins de 90 % de la commune |
 | Trajet jusqu'à une gare | filtre activable, à pied ou à vélo, réseaux RER / Transilien / Métro, seuil de 3 à 20 min (pas de 1 min), propre à chaque mode : changer de mode reprend le seuil de ce mode. « Tramways » (repliable) : une case par ligne en service (T1 à T14), aucune cochée par défaut, boutons « Toutes » / « Aucune ». « Lignes en projet » : « Grand Paris Express (lignes 15 à 18) » et « Prolongements de tramway » (des lignes cochées), avec un curseur commun sur les dates d'ouverture estimées (fin 2026 à fin 2038) qui ne retient que les arrêts ouverts d'ici la date choisie |
+| Trajet jusqu'à une destination | destination (Châtelet-Les Halles, La Défense, Gare de Lyon, Saint-Lazare, Montparnasse, Gare du Nord ; « Aucune » : pas de filtre), période (pointe du matin 7 h 30 – 9 h 30, milieu de journée 11 h – 15 h, en semaine) et durée porte à porte maximale (15 à 90 min) : trajet jusqu'à une gare dans le mode choisi (à pied ou à vélo), puis transports en commun |
 | Pollution de l'air | un curseur par polluant (NO₂, PM2.5, PM10, moyennes annuelles), repères OMS et UE 2030 |
 | Bruit des transports | Lden routier et ferroviaire maximal (de < 75 à < 45 dB), indice global Bruitparif (3 niveaux) |
-| Affichage | couche de contexte (temps de trajet, polluants, bruits), zone retenue, contour de la zone atteignable, quartiers |
+| Affichage | couche de contexte (temps de trajet, temps jusqu'à la destination, polluants, bruits), zone retenue, contour de la zone atteignable, quartiers |
 | Données | âge des données et bouton de mise à jour de celles de plus de 6 mois (voir « Serveur ») |
 | Zone retenue | repliable : surface retenue totale et par commune, part de la surface respectant chaque critère seul |
 
@@ -55,7 +56,9 @@ l'autre (navigateur), comme la dernière vue de la carte.
 - **Encadré en bas à droite** (point sous la souris, pointeur en croix) : gare la plus rapide à atteindre,
   temps à pied et à vélo (arrondis à la minute), bruit routier, ferroviaire et indice global, NO₂ / PM2.5 /
   PM10 (pastille verte sous la recommandation OMS, jaune jusqu'à la valeur limite UE 2030, rouge au-delà),
-  et la liste des raisons d'exclusion quand le point est hors de la zone retenue.
+  durée porte à porte jusqu'à la destination choisie avec la gare de départ et la ligne prise (« via
+  Saint-Maur-des-Fossés - Créteil (RER A, 23 min) »), et la liste des raisons d'exclusion quand le point est
+  hors de la zone retenue.
 - **Noms des communes** téléchargées, dessinés au-dessus des zones à partir du zoom 13.
 - Les contours sont lissés et simplifiés selon le zoom (moins de détail en vue large).
 
@@ -85,8 +88,8 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
 - `web/` : l'application (`index.html`, `app.js`, `style.css`, Leaflet dans `web/vendor/`).
 - `web/data/` : les données. Les couches de base de chaque commune (RER, Transilien, métro, air, bruit) sont
   aussi regroupées dans un seul fichier (`layers.pack`, une requête par commune au lieu d'une vingtaine). Les
-  couches des tramways et des lignes en projet, nombreuses autour de Paris (72 pour Paris), restent à part
-  (`<couche>.bin`) : l'application ne les charge que pour les réseaux cochés. Chaque fichier existe aussi en version
+  couches des tramways, des lignes en projet (72 pour Paris) et des destinations (48 par commune) restent à
+  part (`<couche>.bin`) : l'application ne charge que celles des réseaux cochés et de la destination choisie. Chaque fichier existe aussi en version
   compressée (`.gz`, ~5 fois plus petite), envoyée avec `Content-Encoding: gzip` aux navigateurs qui
   l'acceptent. Le serveur crée au démarrage les paquets et versions compressées manquants.
 - `/tiles/<plan|ortho>/<z>/<x>/<y>` : tuiles IGN du fond de carte (Plan IGN, photo aérienne), gardées
@@ -120,9 +123,11 @@ Les constructions sont traitées une par une par un seul fil d'exécution (elles
 téléchargement). L'application interroge `/api/status` toutes les 1,5 s pendant une construction (5 s sinon) ;
 quand le numéro de version change, elle recharge l'index et affiche les communes nouvelles ou reconstruites.
 
-Les couches d'une commune forment quatre groupes, chacun avec son format (`FORMATS` dans `pipeline.py`, à
-incrémenter quand le calcul du groupe change) : `grille` (contour de la commune), `transport` (temps de
-trajet et gares : réseau OSM, gares IDFM et en projet), `air` (Airparif) et `bruit` (Bruitparif, DRIEAT). Une
+Les couches d'une commune forment cinq groupes, chacun avec son format (`FORMATS` dans `pipeline.py`, à
+incrémenter quand le calcul du groupe change, avec `DATA_FORMAT`) : `grille` (contour de la commune),
+`transport` (gares et temps jusqu'à la gare la plus proche de chaque réseau : réseau OSM, gares IDFM et en
+projet), `destinations` (temps porte à porte : horaires GTFS ; refait avec `transport`, ses couches désignant
+les gares par leur rang, mais pas l'inverse), `air` (Airparif) et `bruit` (Bruitparif, DRIEAT). Une
 reconstruction ne recalcule que les groupes périmés et reprend les autres couches de la version actuelle
 (fichiers et versions compressées) ; tout est recalculé si la grille change (contour de la commune
 modifié). Un changement des transports ne refait donc ni la pollution ni le bruit (Vincennes : 10 s).
@@ -135,7 +140,7 @@ Exception : les quartiers d'un calcul antérieur (`QUARTIERS_FORMAT`) ne sont re
 ### Âge des données et mise à jour
 
 Chaque fichier téléchargé (`data/raw/`) est daté de son téléchargement. `GET /api/freshness` les regroupe par
-source : gares et accès IDFM, gares du Grand Paris Express en projet, contours des communes, indice air-bruit, bruit DRIEAT (communs à toutes les
+source : gares et accès IDFM, horaires des transports (GTFS), gares du Grand Paris Express en projet, contours des communes, indice air-bruit, bruit DRIEAT (communs à toutes les
 communes), réseau OSM, pollution Airparif, bruit routier et ferroviaire Bruitparif, quartiers Linternaute,
 contours IRIS de l'IGN (propres à chaque commune). Les tuiles du fond de carte ont leur propre durée de vie
 (voir « Fichiers servis »).
@@ -150,9 +155,9 @@ La mise à jour (`POST /api/refresh`) passe par la file de construction :
    qu'une fois complet ; si le téléchargement échoue, l'ancien fichier est conservé ;
 2. les conversions dérivées (carte air-bruit, couches DRIEAT) sont refaites de la même façon ;
 3. les communes concernées sont reconstruites une à une, en ne recalculant que les groupes de couches des
-   sources périmées (réseau OSM ou gares : transports ; Airparif : air ; Bruitparif ou DRIEAT : bruit ;
-   quartiers ou IRIS : quartiers seulement ; contours des communes : tout), à côté de leur version actuelle,
-   qui reste servie jusqu'au remplacement. La liste des communes restant à faire (avec leurs groupes) est
+   sources périmées (réseau OSM ou gares : transports et destinations ; horaires : destinations ; Airparif :
+   air ; Bruitparif ou DRIEAT : bruit ; quartiers ou IRIS : quartiers seulement ; contours des communes :
+   tout), à côté de leur version actuelle, qui reste servie jusqu'au remplacement. La liste des communes restant à faire (avec leurs groupes) est
    gardée dans `data/raw/refresh_state.json` pour reprendre une mise à jour interrompue.
 
 Aucune donnée n'est donc effacée avant que sa nouvelle version soit disponible.
@@ -201,6 +206,8 @@ taille de cellule…
   `web/data/index.json` et `web/data/global/` (gares et accès de toutes les communes).
 - `scripts/server.py` : serveur local (voir « Serveur »).
 - `scripts/build_data.py` : construction en ligne de commande.
+- `scripts/transit.py` : durées en transports en commun de chaque gare aux destinations (horaires GTFS) ;
+  lancé seul, calcule les tables et en affiche un extrait.
 - `scripts/data_archive.py` : sauvegarde et restauration des données hors dépôt.
 - `web/` : application (Leaflet, sans étape de build).
 
@@ -211,6 +218,7 @@ taille de cellule…
 | Temps à pied jusqu'à une gare | OpenStreetMap (Overpass, dalles en cache dans `data/raw/osm/`) + entrées de gares et bouches de métro IDFM | plus court chemin sur le réseau piéton, 4,5 km/h, depuis chaque entrée ; temps réel par cellule (s) |
 | Temps à vélo jusqu'à une gare | OpenStreetMap | plus court chemin vers la gare, sens uniques respectés sauf contresens cyclables, 15 km/h (6 km/h sur voies piétonnes), escaliers et voies interdites exclus |
 | Tramways (option) | IDFM, `emplacement-des-gares-idf` (modes `TRAMWAY` et `TRAM`) | arrêts des lignes T1 à T14 à moins de 4,5 km de la commune ; un jeu de couches de temps par ligne (`walk_tram3a`…), combiné dans l'application selon les lignes cochées |
+| Temps jusqu'à une destination (option) | IDFM, horaires théoriques GTFS `offre-horaires-tc-gtfs-idfm` (cache `data/raw/idfm_gtfs.zip`, 147 Mo) | RER, Transilien, métro, tramway et TER d'un mardi de la période couverte par le fichier (`transit.py`, `SERVICE_WEEKDAY`). Pour chaque destination (`DESTINATIONS` : zones de correspondance IDFM d'arrivée), profil de tous les départs de chaque arrêt en une passe (Connection Scan Algorithm), attente et correspondances (temps de marche du GTFS) comprises ; par gare et par période (`PERIODS`), durée médiane des départs de chaque minute et ligne prise au départ. Puis, par commune, temps porte à porte en chaque point = min sur les gares de (trajet jusqu'à la gare + durée en transports), en minutes (`walk_dest_<destination>_<période>`…) avec la gare de départ |
 | Lignes en projet (option) | IDFM, `projets_arrets_idf` et `projets_lignes_idf` (cache `data/raw/idfm_projets_*.geojson`) | gares des lignes 15 à 18 du Grand Paris Express et arrêts des prolongements de tramway (T1, T7, T8, T11, T13), avec la date de mise en service estimée de leur tronçon (opération et phase) ; une gare du Grand Paris Express desservie par plusieurs lignes ouvre avec la première ; pas d'accès connus : temps calculés depuis le point de l'arrêt. Un jeu de couches de temps par date d'ouverture ayant un arrêt à portée de la commune (`walk_gpeAAAAMMJJ`, `walk_tram1_AAAAMMJJ`…), combiné dans l'application selon la date choisie |
 | Gares et stations | IDFM, `emplacement-des-gares-idf` | gares RER (A–E), Transilien (H, J, K, L, N, P, R, U, V) et stations de métro (1 à 14, 3bis, 7bis) à moins de 4,5 km de la commune ; temps calculé par réseau, combiné dans l'application selon les réseaux cochés |
 | NO₂, PM2.5, PM10 | Airparif, WCS 1.0 `namek.airparif.fr` | moyennes annuelles 2025 modélisées, 6,25 m |
@@ -258,6 +266,13 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
   T11 phase 2 (2038) n'est encore qu'à l'étude.
 - Tramways : la vitesse du tram n'intervient pas (seul compte le trajet jusqu'à l'arrêt) ; un arrêt de tram
   compte comme une gare.
+- Temps jusqu'à une destination : horaires théoriques d'un seul jour (mardi), sans retards ni travaux ; durée
+  médiane des départs de la période (l'encadré de survol donne la gare et la ligne prise au départ). Toutes
+  les gares en service comptent comme gare de départ, quels que soient les réseaux cochés, et tout le réseau
+  ferré sert au trajet ; les lignes en projet n'ont pas d'horaires et ne sont pas prises en compte ; bus
+  exclus. Les horaires sont retéléchargés avec les autres données de plus de 6 mois (nouveau jour de
+  référence). Les couches de destinations pèsent ~3 octets par cellule et par paire (destination, période,
+  mode) : ~2,6 Go bruts pour 190 communes.
 - En WCS 2.0, le GeoServer d'Airparif échoue sur certaines emprises. Le pipeline utilise donc
   WCS 1.0 et vérifie qu'il reçoit bien un GeoTIFF.
 - Quartiers : endpoint interne et non documenté de Linternaute, qui peut changer ; licence de réutilisation
@@ -304,8 +319,8 @@ python3 scripts/data_archive.py restore immo_map-data-AAAAMMJJ.tar.xz
 secondes si la commande `xz` est installée (tous les cœurs), sinon en ~7 min par le module `lzma` de Python
 (un seul cœur). Sont omis les fichiers recalculables : les versions compressées `.gz` et les paquets
 `layers.pack` de `web/data/` (recréés au démarrage du serveur), `data/raw/airbruit2024.gpkg` (conversion de
-`airbruit2024.zip`, refaite à la demande) et les tuiles du fond de carte (`data/raw/tiles/`, retéléchargées à
-la demande). Avec `--no-cache`, seul `web/data/` est archivé : l'application fonctionne, mais ajouter ou
+`airbruit2024.zip`, refaite à la demande), les tuiles du fond de carte (`data/raw/tiles/`, retéléchargées à
+la demande) et les fichiers tirés des horaires (`data/raw/gtfs_rail_*.npz`, `data/raw/transit_*.json`). Avec `--no-cache`, seul `web/data/` est archivé : l'application fonctionne, mais ajouter ou
 reconstruire une commune retéléchargera ses données.
 
 **`restore`** reconnaît la compression (gzip, xz, bzip2 ou aucune) d'après le contenu du fichier, quel

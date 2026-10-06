@@ -12,7 +12,8 @@ save        crée une archive avec web/data/ (communes construites, suffisant po
               - web/data/**/*.gz : versions compressées, recréées au démarrage du serveur ;
               - web/data/communes/*/layers.pack : couches regroupées, recréées au démarrage du serveur ;
               - data/raw/airbruit2024.gpkg : conversion de airbruit2024.zip, refaite à la demande ;
-              - data/raw/tiles/ : tuiles du fond de carte, retéléchargées à la demande.
+              - data/raw/tiles/ : tuiles du fond de carte, retéléchargées à la demande ;
+              - data/raw/gtfs_rail_*.npz, data/raw/transit_*.json : tirés des horaires (idfm_gtfs.zip).
             --no-cache : web/data/ seulement (archive bien plus petite).
             --xz : compression xz, archive ~25 % plus petite qu'en gzip ; utilise la commande xz sur tous
             les cœurs si elle est installée (sinon le module lzma, sur un seul cœur : ~7 min pour
@@ -40,6 +41,8 @@ MAGIC = [(b"\x1f\x8b", "r:gz", "gzip"), (b"\xfd7zXZ\x00", "r:xz", "xz"), (b"BZh"
 
 def keep(rel):
     if rel in SKIP_FILES or rel.endswith(SKIP_SUFFIXES) or ".part" in rel or rel.startswith("data/raw/tiles/"):
+        return False
+    if rel.startswith(("data/raw/gtfs_rail_", "data/raw/transit_")):  # tirés de idfm_gtfs.zip en quelques secondes
         return False
     if rel.startswith("web/data/") and (rel.endswith(".gz") or rel.endswith("/layers.pack")):
         return False
