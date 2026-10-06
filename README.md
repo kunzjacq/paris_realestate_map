@@ -60,7 +60,9 @@ l'autre (navigateur), comme la dernière vue de la carte.
   durée porte à porte jusqu'à la destination choisie avec la gare de départ et la ligne prise (« via
   Saint-Maur-des-Fossés - Créteil (RER A, 23 min) »), et la liste des raisons d'exclusion quand le point est
   hors de la zone retenue.
-- **Noms des communes** téléchargées, dessinés au-dessus des zones à partir du zoom 13.
+- **Noms des communes** téléchargées, dessinés au-dessus des zones à partir du zoom 13. Leur emplacement, comme
+  celui des noms de quartiers, est calculé par le pipeline (point le plus éloigné des bords, `polylabel`) :
+  calculé dans le navigateur, il bloquait l'affichage ~3,5 s au démarrage.
 - Les contours sont lissés et simplifiés selon le zoom (moins de détail en vue large).
 
 ## Serveur
@@ -76,8 +78,8 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
 2. **Contours des communes d'Île-de-France** : chargés depuis `data/raw/idf_communes.gpkg` (téléchargés une
    fois sur geo.api.gouv.fr) ; ils servent à la recherche et aux requêtes « commune sous un point ».
 3. **Index** : `web/data/index.json` est créé s'il manque.
-4. **Mises à niveau des données existantes** : résumé des plages de pollution ajouté aux communes qui ne
-   l'ont pas ; quartiers (`quartiers.geojson`, `quartiers_limites.geojson`) calculés pour les communes qui
+4. **Mises à niveau des données existantes** : résumé des plages de pollution et emplacement du nom ajoutés
+   aux communes qui ne les ont pas ; quartiers (`quartiers.geojson`, `quartiers_limites.geojson`) calculés pour les communes qui
    n'en ont pas ou dont le calcul est antérieur (`QUARTIERS_FORMAT` dans `pipeline.py`), sans reconstruire
    les communes ; versions compressées `.gz` créées ou rafraîchies ; communes dont un groupe de couches a un
    format antérieur (`FORMATS` dans `pipeline.py`, voir « File de construction ») mises en file de

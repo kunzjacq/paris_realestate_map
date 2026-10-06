@@ -116,7 +116,7 @@ async function loadCommuneMeta(code, built) {
     code, meta, built, loaded: false, loading: null,
     outlineRings: outlineGeo.features.flatMap((f) => geoRings(f.geometry)),
     outline: L.geoJSON(outlineGeo, { style: { color: "#1f2328", weight: LIMIT_WEIGHT, fill: false }, interactive: false }).addTo(map),
-    label: communeLabel(meta.nom, outlineGeo).addTo(map),
+    label: communeLabel(meta.nom, outlineGeo, meta.label).addTo(map),
   });
 }
 
@@ -224,8 +224,9 @@ function showLoading(n) {
 const LABEL_MIN_ZOOM = 13;  // en dessous, noms masqués (vue d'ensemble trop chargée)
 const LIMIT_WEIGHT = 2;  // épaisseur des limites de communes (trait plein) et de quartiers (pointillés)
 
-function communeLabel(nom, geo) {
-  return L.marker(labelPoint(geo), {
+// emplacement précalculé par le pipeline ([lat, lon]) ; à défaut (données plus anciennes), calculé ici
+function communeLabel(nom, geo, label) {
+  return L.marker(label || labelPoint(geo), {
     pane: "labels", interactive: false, keyboard: false,
     icon: L.divIcon({ className: "commune-label", html: `<span>${nom}</span>`, iconSize: null }),
   });
@@ -245,7 +246,7 @@ function quartiersLayer(geo, limits) {
   g.addLayer(L.geoJSON(limits || geo, { pane: "quartiers", interactive: false,
     style: { color: "#3d4148", weight: LIMIT_WEIGHT, opacity: 0.8, dashArray: "6 5", fill: false } }));
   for (const f of geo.features) {
-    g.addLayer(L.marker(labelPoint({ features: [f] }), {
+    g.addLayer(L.marker(f.properties.label || labelPoint({ features: [f] }), {
       pane: "labels", interactive: false, keyboard: false,
       icon: L.divIcon({ className: "quartier-label", html: `<span>${f.properties.nom}</span>`, iconSize: null }),
     }));

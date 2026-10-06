@@ -43,7 +43,7 @@ from rasterio.transform import from_origin
 from rasterio.warp import Resampling, reproject, transform_bounds
 from shapely import STRtree
 from shapely.geometry import Point, box, shape
-from shapely.ops import linemerge, unary_union
+from shapely.ops import linemerge, polylabel, unary_union
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw"
@@ -278,7 +278,7 @@ QUARTIER_RENAMES = {  # code INSEE -> {nom Linternaute: nom affiché}
 }
 
 
-QUARTIERS_FORMAT = 5     # à incrémenter quand le calcul des quartiers change : recalculés au démarrage du serveur
+QUARTIERS_FORMAT = 6     # à incrémenter quand le calcul des quartiers change : recalculés au démarrage du serveur
 IRIS_MIN_COVER = 0.5   # IRIS attribué à un quartier si les quartiers Linternaute en couvrent au moins la moitié
 IRIS_MIN_IOU = 0.6     # en deçà pour un quartier (surface commune / surface réunie), découpage jugé sans rapport
 IRIS_FALLBACK_OPEN_M = 8  # quartier gardé en contour Linternaute : parties de moins de 16 m de large retirées
@@ -453,7 +453,22 @@ def quartier_limits(g, commune_wgs):
     return gpd.GeoDataFrame(geometry=geoms, crs=2154).to_crs(4326)
 
 
+LABEL_TOLERANCE_M = 5  # précision de l'emplacement des noms (polylabel)
+
+
+def label_point(geom_wgs):
+    """Emplacement du nom d'une surface : point le plus éloigné de ses bords (polylabel) dans sa plus grande
+    partie, [lat, lon]. Calculé ici une fois pour toutes : dans le navigateur, il bloquait l'affichage
+    plusieurs secondes au démarrage (1 400 quartiers, 190 communes)."""
+    g = gpd.GeoSeries([geom_wgs], crs=4326).to_crs(2154).iloc[0]
+    part = max(getattr(g, "geoms", [g]), key=lambda x: x.area)
+    pt = gpd.GeoSeries([polylabel(part, tolerance=LABEL_TOLERANCE_M)], crs=2154).to_crs(4326).iloc[0]
+    return [round(pt.y, 6), round(pt.x, 6)]
+
+
 def write_quartiers(d, g, commune_wgs):
+    g = g.copy()
+    g["label"] = [label_point(geom) for geom in g.geometry]  # emplacement du nom, [lat, lon]
     (d / "quartiers.geojson").write_text(g.to_json(drop_id=True, ensure_ascii=False))
     (d / "quartiers_limites.geojson").write_text(quartier_limits(g, commune_wgs).to_json(drop_id=True))
 
@@ -1339,6 +1354,7 @@ def build_commune(code, log=print, groups=None, index=True):
         "route_coverage": round(float((layers["lden_route"][layers["commune"] > 0] > 0).mean()), 3),
         "built": time.strftime("%Y-%m-%d %H:%M"),
         "air_range": air_range(layers),
+        "label": label_point(row.geometry),  # emplacement du nom de la commune, [lat, lon]
         "quartiers": None if quart is None else len(quart),  # None : pas de quartiers.geojson
         "quartiers_format": None if quart is None else QUARTIERS_FORMAT,
         "quartiers_source": None if quart is None else quart.attrs.get("source"),  # "iris" ou "linternaute"
@@ -1524,6 +1540,22 @@ def read_layers(code, names=None):
     layers = {name: np.fromfile(d / f"{name}.bin", dtype=info["dtype"]).reshape(meta["height"], meta["width"])
               for name, info in meta["layers"].items() if names is None or name in names}
     return meta, layers
+
+
+def add_missing_labels():
+    """Complète meta.json des communes construites avant l'emplacement précalculé de leur nom."""
+    n = 0
+    for d in COMMUNES_DIR.iterdir():
+        f = d / "meta.json"
+        if d.name.startswith(".") or not f.exists():
+            continue
+        meta = json.loads(f.read_text())
+        if "label" not in meta:
+            meta["label"] = label_point(commune_geom(d.name).geometry)
+            f.write_text(json.dumps(meta, ensure_ascii=False))
+            write_gz(f)
+            n += 1
+    return n
 
 
 def add_missing_air_ranges():

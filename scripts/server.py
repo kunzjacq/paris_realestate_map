@@ -350,6 +350,9 @@ def main():
     pipeline.communes_table()  # charge (ou télécharge une fois) les contours des communes
     if not (pipeline.WEB_DATA / "index.json").exists():
         pipeline.update_index()
+    n = pipeline.add_missing_labels()
+    if n:
+        print(f"emplacement du nom ajouté à {n} communes", flush=True)
     n = pipeline.add_missing_air_ranges()
     if n:
         print(f"résumé des plages de pollution ajouté à {n} communes", flush=True)
