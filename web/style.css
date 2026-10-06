@@ -96,7 +96,7 @@ select { width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--l
 .check { display: block; margin-top: 6px; cursor: pointer; }
 .check input { accent-color: var(--accent); }
 .check-top { margin: 0 0 8px; }
-#walk-controls.off, #air-sliders.off, #noise-controls.off { opacity: .4; pointer-events: none; }
+#walk-controls.off, #air-sliders.off, #noise-controls.off, #prix-controls.off { opacity: .4; pointer-events: none; }
 .seg { display: flex; gap: 0; margin-bottom: 10px; }
 .seg button {
   flex: 1; border: 1px solid var(--line); background: #fff; padding: 6px 10px; font: inherit; cursor: pointer; color: var(--ink);
@@ -142,6 +142,7 @@ select { width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--l
 
 #legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; margin-bottom: 6px; }
 #legend .sw { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -2px; margin-right: 4px; }
+#legend .sw.hatch, .hover-box .sw.hatch { background: repeating-linear-gradient(45deg, #444 0 1.5px, transparent 1.5px 4px); box-shadow: inset 0 0 0 1px #ccc; }
 #legend .ramp { width: 100%; height: 10px; border-radius: 2px; }
 #legend .ends { width: 100%; display: flex; justify-content: space-between; color: var(--muted); }
 
@@ -202,6 +203,7 @@ body.panel-hidden #panel, body.panel-hidden #resizer { display: none; }
 .hover-box .verdict { margin-top: 5px; padding-top: 4px; border-top: 1px solid var(--line); }
 .hover-box .dest { margin-top: 5px; padding-top: 4px; border-top: 1px solid var(--line); }
 .hover-box .dest.fail strong { color: #b42318; }
+.hover-box .prix { margin-top: 5px; padding-top: 4px; border-top: 1px solid var(--line); }
 .hover-box .verdict.ok { color: var(--accent); font-weight: 600; }
 .hover-box .verdict ul { margin: 2px 0 0; padding-left: 16px; }
 .hover-box .verdict li { margin: 1px 0; }

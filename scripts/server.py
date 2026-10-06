@@ -359,6 +359,9 @@ def main():
     n = pipeline.add_missing_quartiers()
     if n:
         print(f"quartiers ajoutés à {n} communes", flush=True)
+    n = pipeline.add_missing_prix()
+    if n:
+        print(f"prix immobiliers calculés pour {n} communes", flush=True)
     n = pipeline.pack_missing()
     if n:
         print(f"paquet des couches créé pour {n} communes", flush=True)

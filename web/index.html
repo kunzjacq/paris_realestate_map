@@ -8,6 +8,16 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- motifs des quartiers sans assez de ventes (couche de contexte des prix, rendu SVG) -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+    <!-- fond transparent : seule la couleur dessous paraît entre les traits ; traits clairs sur couleur sombre -->
+    <pattern id="prix-hatch" patternUnits="userSpaceOnUse" width="28" height="28" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="28" stroke="#444" stroke-width="2"/>
+    </pattern>
+    <pattern id="prix-hatch-light" patternUnits="userSpaceOnUse" width="28" height="28" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="28" stroke="#fff" stroke-width="2"/>
+    </pattern>
+  </defs></svg>
   <aside id="panel">
     <header>
       <button type="button" id="hide-panel" class="panel-btn" title="Masquer le menu" aria-label="Masquer le menu">«</button>
@@ -132,6 +142,20 @@
     </section>
 
     <section>
+      <h2>Prix immobilier <output id="prix-out"></output></h2>
+      <label class="check check-top"><input type="checkbox" id="prix-filter"> Filtrer par le prix</label>
+      <div id="prix-controls">
+        <div class="seg" id="prix-type" role="group" aria-label="Type de logement">
+          <button type="button" data-type="appartement">Appartements</button>
+          <button type="button" data-type="maison">Maisons</button>
+        </div>
+        <input type="range" id="prix-max" min="3000" max="15000" step="250" value="8000" aria-label="Prix maximal au m²">
+        <div class="ticks" id="prix-ticks"><span>3 000</span><span>6 000</span><span>9 000</span><span>12 000</span><span>15 000 €/m²</span></div>
+      </div>
+      <p class="note">Prix médian au m² des ventes d'un seul logement ancien (DVF) du quartier ; à défaut (moins de 10 ventes de ce type, ou commune sans quartiers), celui de la commune. Prix inconnu : point accepté.</p>
+    </section>
+
+    <section>
       <h2>Affichage</h2>
       <label class="field">
         <span>Couche de contexte</span>
@@ -145,6 +169,8 @@
           <option value="bp_noise">Indice global Bruitparif</option>
           <option value="lden_route">Bruit routier</option>
           <option value="lden_fer">Bruit ferroviaire</option>
+          <option value="prix_appartement">Prix au m² des appartements</option>
+          <option value="prix_maison">Prix au m² des maisons</option>
         </select>
       </label>
       <div id="legend"></div>

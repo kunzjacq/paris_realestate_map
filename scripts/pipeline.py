@@ -7,6 +7,7 @@ web/data/communes/<code>/ :
   commune.geojson, stations.geojson, acces.geojson
   quartiers.geojson  découpage en quartiers (Linternaute), absent si le téléchargement a échoué
   quartiers_limites.geojson  limites entre quartiers, chacune une seule fois (tracé en pointillés)
+  prix.json      prix médian au m² (ventes DVF) de la commune et de ses quartiers
 
 web/data/index.json liste les communes construites ; web/data/global/ regroupe
 les gares et accès de toutes les communes pour l'affichage. Les contours des zones
@@ -124,6 +125,7 @@ SOURCES = {
     "lden": "Bruit ferroviaire : Bruitparif, CSB E4 consolidée (8 classes), complétée par la DRIEAT (CSB E4 2022, valeur la plus élevée retenue)",
     "gpe": "Grand Paris Express et prolongements de tramway : arrêts en projet et dates de mise en service estimées (IDFM, projets_arrets_idf et projets_lignes_idf)",
     "transit": "Temps porte à porte jusqu'à une destination : trajet jusqu'à une gare puis RER, Transilien, métro, tramway ou TER selon les horaires théoriques IDFM d'un mardi (GTFS, offre-horaires-tc-gtfs-idfm), durée médiane des départs de la période",
+    "dvf": "Prix au m² : ventes d'un seul logement (appartement ou maison, hors neuf), Demandes de valeurs foncières (DGFiP), version géolocalisée d'Etalab",
     "walk": f"Temps à pied : plus court chemin sur le réseau OpenStreetMap jusqu'aux entrées des gares (IDFM), {WALK_SPEED_KMH} km/h",
     "bike": f"Temps à vélo : réseau OpenStreetMap, sens uniques respectés (sauf contresens cyclables), {BIKE_SPEED_KMH} km/h ({BIKE_SLOW_KMH} km/h sur voies piétonnes)",
 }
@@ -493,6 +495,171 @@ def add_missing_quartiers(log=print):
         write_gz(d / "quartiers.geojson")
         write_gz(d / "quartiers_limites.geojson")
         meta.update(quartiers=len(g), quartiers_format=QUARTIERS_FORMAT, quartiers_source=g.attrs.get("source"))
+        meta_f.write_text(json.dumps(meta, ensure_ascii=False))
+        write_gz(meta_f)
+        n += 1
+    return n
+
+
+# --------------------------------------------------------------------------- prix immobiliers (DVF)
+#
+# Prix médian au m² par commune et par quartier, tiré des ventes « Demandes de valeurs foncières » (DGFiP),
+# version géolocalisée d'Etalab. Une mutation (un acte) regroupe tous les biens vendus ensemble : la vente
+# d'un immeuble entier à un promoteur (souvent ~1 000-1 500 €/m² pour des dizaines de logements) apparaît
+# comme une seule mutation de plusieurs logements. Ne sont gardées que les ventes d'un seul logement
+# (appartement ou maison, avec ou sans dépendances : cave, parking), sans local d'activité, hors ventes en
+# l'état futur d'achèvement (neuf), adjudications, échanges et terrains à bâtir ; les prix au m² aberrants
+# (erreurs de saisie, cessions symboliques) sont écartés, et la médiane résiste aux quelques cas restants.
+
+DVF_URL = "https://files.data.gouv.fr/geo-dvf/latest/csv"
+DVF_YEARS = 3                    # millésimes pris en compte, les plus récents publiés (plus : prix d'avant la baisse de 2023)
+DVF_FILTER = 1                   # à incrémenter quand le filtrage des ventes change (cache ventes_*.csv.gz)
+DVF_TYPES = {"Appartement": "appartement", "Maison": "maison"}
+PRIX_LAYERS = [f"prix_{t}" for t in DVF_TYPES.values()]  # prix médian par cellule (€/m², uint16, 0 : inconnu)
+PRIX_FORMAT = 2                  # à incrémenter quand le calcul de prix.json change : refait au démarrage du serveur
+PRIX_MIN_SALES = 10              # en deçà, pas de prix médian (trop peu de ventes)
+PRIX_PM2_RANGE = (1000, 40000)   # prix au m² plausibles en Île-de-France ; au-delà, vente écartée
+PRIX_MIN_SURFACE_M2 = 9          # surface bâtie minimale (surfaces nulles ou erronées)
+_dvf_cache = None                # (fichier, ventes) déjà lus par ce processus
+
+
+def dvf_years():
+    """Millésimes DVF retenus (les DVF_YEARS derniers publiés), liste revue à chaque mise à jour."""
+    d = RAW / "dvf"
+    d.mkdir(exist_ok=True)
+
+    def fetch():
+        years = sorted(set(re.findall(r'/(\d{4})/"', http_get(f"{DVF_URL}/").text)))
+        if not years:
+            raise RuntimeError("aucun millésime dans la liste DVF")
+        return json.dumps(years).encode()
+    return json.loads(cached(d / "millesimes.json", fetch).read_text())[-DVF_YEARS:]
+
+
+def dvf_file(year, dep):
+    def fetch():
+        content = http_get(f"{DVF_URL}/{year}/departements/{dep}.csv.gz").content
+        if content[:2] != b"\x1f\x8b":
+            raise RuntimeError(f"DVF {year} {dep} : fichier inattendu")
+        return content
+    return cached(RAW / "dvf" / f"{year}_{dep}.csv.gz", fetch)
+
+
+def dvf_filter(path):
+    """Ventes d'un seul logement d'un fichier DVF : code commune (Paris : 75056), date, type, prix au m²,
+    coordonnées."""
+    cols = ["id_mutation", "date_mutation", "nature_mutation", "valeur_fonciere", "code_commune", "type_local",
+            "surface_reelle_bati", "longitude", "latitude"]
+    d = pd.read_csv(path, usecols=cols, dtype=str)
+    d = d[d.nature_mutation == "Vente"]
+    t = d.type_local.fillna("")
+    per = pd.DataFrame({"m": d.id_mutation, "log": t.isin(DVF_TYPES), "loc": t.str.startswith("Local")}).groupby("m").sum()
+    single = per.index[(per.log == 1) & (per["loc"] == 0)]
+    s = d[t.isin(DVF_TYPES) & d.id_mutation.isin(single)]
+    surface = pd.to_numeric(s.surface_reelle_bati, errors="coerce")
+    pm2 = pd.to_numeric(s.valeur_fonciere, errors="coerce") / surface
+    ok = (surface >= PRIX_MIN_SURFACE_M2) & pm2.between(*PRIX_PM2_RANGE)
+    s, pm2 = s[ok], pm2[ok]
+    return pd.DataFrame({"code": s.code_commune.where(~s.code_commune.str.startswith("751"), "75056"),
+                         "date": s.date_mutation, "type": s.type_local.map(DVF_TYPES), "pm2": pm2.round().astype(int),
+                         "lon": pd.to_numeric(s.longitude, errors="coerce"),
+                         "lat": pd.to_numeric(s.latitude, errors="coerce")})
+
+
+def dvf_sales(log=print):
+    """Ventes retenues de l'Île-de-France sur les derniers millésimes : (DataFrame, (première, dernière année),
+    fichier). Les fichiers DVF sont téléchargés une fois (data/raw/dvf/), les ventes filtrées mises en cache."""
+    global _dvf_cache
+    years = dvf_years()
+    files = [dvf_file(y, dep) for y in years for dep in IDF_DEPTS]
+    out = RAW / "dvf" / f"ventes_{years[0]}_{years[-1]}_v{DVF_FILTER}.csv.gz"
+    with lock_for(str(out)):
+        if not out.exists() or out.stat().st_mtime < max(f.stat().st_mtime for f in files):
+            log(f"ventes immobilières : filtrage des DVF {years[0]}-{years[-1]}")
+            tmp = out.with_name(out.name + f".{os.getpid()}.part")
+            pd.concat([dvf_filter(f) for f in files], ignore_index=True).to_csv(tmp, index=False, compression="gzip")
+            os.replace(tmp, out)
+            for old in (RAW / "dvf").glob("ventes_*.csv.gz"):  # versions précédentes du filtrage
+                if old != out:
+                    old.unlink(missing_ok=True)
+        if _dvf_cache is None or _dvf_cache[0] != (out, out.stat().st_mtime):
+            _dvf_cache = ((out, out.stat().st_mtime), pd.read_csv(out, dtype={"code": str}))
+    return _dvf_cache[1], (int(years[0]), int(years[-1])), out
+
+
+def prix_stats(s):
+    """Par type de logement : nombre de ventes et, s'il y en a assez, médiane et quartiles du prix au m²."""
+    out = {}
+    for t in DVF_TYPES.values():
+        v = s["pm2"][s["type"] == t]  # s["type"] : sur un GeoDataFrame, s.type est le type de géométrie
+        out[t] = {"n": int(len(v))}
+        if len(v) >= PRIX_MIN_SALES:
+            q1, med, q3 = (int(round(x, -1)) for x in v.quantile([0.25, 0.5, 0.75]))
+            out[t].update(med=med, q1=q1, q3=q3)
+    return out
+
+
+def write_prix(d, code, shape, transform, log=print):
+    """Écrit d/prix.json (commune, et chacun des quartiers de d/quartiers.geojson) et les couches
+    prix_<type>.bin de la grille (shape, transform : Web Mercator) ; False si les DVF sont indisponibles
+    (la commune reste sans prix, réessayée au démarrage suivant du serveur).
+
+    Couches (filtre « prix maximal ») : médiane du quartier de chaque cellule ; à défaut (quartier de moins de
+    PRIX_MIN_SALES ventes de ce type, partie de la commune hors des quartiers, commune sans quartiers),
+    médiane de la commune ; 0 si la commune elle-même a trop peu de ventes."""
+    try:
+        sales, years, _ = dvf_sales(log)
+    except Exception as e:
+        log(f"prix immobiliers indisponibles ({e})")
+        return False
+    s = sales[sales.code == code]
+    res = {"years": years, "min_sales": PRIX_MIN_SALES, "commune": prix_stats(s), "quartiers": {}}
+    qf = d / "quartiers.geojson"
+    q = gpd.read_file(qf) if qf.exists() else None
+    if q is not None and len(q):
+        located = s.dropna(subset=["lon", "lat"])
+        pts = gpd.GeoDataFrame(located, geometry=gpd.points_from_xy(located.lon, located.lat), crs=4326)
+        j = gpd.sjoin(pts, q[["nom", "geometry"]], predicate="within")
+        groups = dict(list(j.groupby("nom")))
+        res["quartiers"] = {nom: prix_stats(groups.get(nom, s.iloc[:0])) for nom in q.nom}
+    qm = q.to_crs(3857) if q is not None and len(q) else None
+    for t, name in zip(DVF_TYPES.values(), PRIX_LAYERS):
+        layer = np.full(shape, res["commune"][t].get("med", 0), "uint16")
+        if qm is not None:
+            shapes = [(g, res["quartiers"][n][t]["med"]) for n, g in zip(qm.nom, qm.geometry)
+                      if "med" in res["quartiers"][n][t]]
+            if shapes:
+                burnt = rasterize(shapes, out_shape=shape, transform=transform, fill=0, dtype="uint16")
+                layer = np.where(burnt > 0, burnt, layer)
+        (d / f"{name}.bin").write_bytes(layer.tobytes())
+    (d / "prix.json").write_text(json.dumps(res, ensure_ascii=False))
+    return True
+
+
+def add_missing_prix(log=print):
+    """(Re)calcule prix.json des communes qui n'en ont pas, l'ont calculé autrement (PRIX_FORMAT), ou avant
+    leurs quartiers ou les dernières ventes ; renvoie le nombre de communes complétées."""
+    try:
+        _, _, sales_f = dvf_sales(log)
+    except Exception as e:
+        log(f"prix immobiliers indisponibles ({e})")
+        return 0
+    n = 0
+    for d in sorted(COMMUNES_DIR.iterdir()):
+        meta_f = d / "meta.json"
+        if d.name.startswith(".") or not meta_f.exists():
+            continue
+        meta, f, q = json.loads(meta_f.read_text()), d / "prix.json", d / "quartiers.geojson"
+        newest = max(sales_f.stat().st_mtime, q.stat().st_mtime if q.exists() else 0)
+        if meta.get("prix_format") == PRIX_FORMAT and f.exists() and f.stat().st_mtime >= newest:
+            continue
+        m = meta["merc"]
+        if not write_prix(d, d.name, (meta["height"], meta["width"]), from_origin(m["left"], m["top"], m["cell"], m["cell"]),
+                          lambda msg: log(f"{meta['nom']} : {msg}")):
+            continue
+        for name in ("prix.json", *(f"{n}.bin" for n in PRIX_LAYERS)):
+            write_gz(d / name)
+        meta["prix_format"] = PRIX_FORMAT
         meta_f.write_text(json.dumps(meta, ensure_ascii=False))
         write_gz(meta_f)
         n += 1
@@ -1316,6 +1483,7 @@ def build_commune(code, log=print, groups=None, index=True):
     quart = quartiers(code, row.geometry, lambda m: log(f"{nom} : {m}"))
     if quart is not None:
         write_quartiers(tmp, quart, row.geometry)
+    prix = write_prix(tmp, code, grid.shape, grid.transform, lambda m: log(f"{nom} : {m}"))  # après les quartiers
     if "transport" in groups:
         st = stations.to_crs(4326)
         gpd.GeoDataFrame({"zdc": st.zdc, "nom": st.nom, "lignes": st.lignes.map(" + ".join),
@@ -1358,6 +1526,7 @@ def build_commune(code, log=print, groups=None, index=True):
         "quartiers": None if quart is None else len(quart),  # None : pas de quartiers.geojson
         "quartiers_format": None if quart is None else QUARTIERS_FORMAT,
         "quartiers_source": None if quart is None else quart.attrs.get("source"),  # "iris" ou "linternaute"
+        "prix_format": PRIX_FORMAT if prix else None,  # None : pas de prix.json ni de couches prix_<type>.bin
     }
     (tmp / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
     compress_dir(tmp)
@@ -1538,8 +1707,11 @@ def read_layers(code, names=None):
     """meta.json et couches de la commune (toutes, ou celles de names présentes)."""
     d = COMMUNES_DIR / code
     meta = json.loads((d / "meta.json").read_text())
+    infos = dict(meta["layers"])
+    if names is not None and meta.get("prix_format"):  # couches de prix : seulement si demandées
+        infos.update({n: {"dtype": "uint16"} for n in PRIX_LAYERS if (d / f"{n}.bin").exists()})
     layers = {name: np.fromfile(d / f"{name}.bin", dtype=info["dtype"]).reshape(meta["height"], meta["width"])
-              for name, info in meta["layers"].items() if names is None or name in names}
+              for name, info in infos.items() if names is None or name in names}
     return meta, layers
 
 
@@ -1596,10 +1768,14 @@ def cells_layer(code, name):
     """Couche restreinte aux cellules de la commune, lue à la première demande (les couches des tramways et
     des lignes en projet ne le sont que si on les coche) ; None si la commune n'a pas cette couche."""
     built, inside, _, sub = commune_cells(code)
-    if name not in sub:
+    key = name
+    if name in PRIX_LAYERS:  # refaites sans reconstruire la commune (add_missing_prix) : selon leur date
+        f = COMMUNES_DIR / code / f"{name}.bin"
+        key = (name, f.stat().st_mtime if f.exists() else None)
+    if key not in sub:
         _, layers = read_layers(code, {name})
-        sub[name] = layers[name][inside] if name in layers else None
-    return sub[name]
+        sub[key] = layers[name][inside] if name in layers else None
+    return sub[key]
 
 
 def zone_stats(codes, q):
@@ -1634,11 +1810,17 @@ def zone_stats(codes, q):
             layer = v(f"{mode}_dest_{q['dest_key']}")
             if layer is not None:
                 dest = layer <= q.get("dest_max", 60)
-        ok = walk & airok & bp & route & fer & dest
+        prix = np.ones(len(area), bool)
+        if q.get("prix_max") is not None and f"prix_{q.get('prix_type')}" in PRIX_LAYERS:
+            layer = v(f"prix_{q['prix_type']}")
+            if layer is not None:  # 0 : prix inconnu, accepté
+                prix = (layer == 0) | (layer <= q["prix_max"])
+        ok = walk & airok & bp & route & fer & dest & prix
         out[code] = {"total": float(area.sum()), "ok": float(area[ok].sum()),
                      "crit": {"walk": float(area[walk].sum()), "air": float(area[airok].sum()),
                               "bp": float(area[bp].sum()), "route": float(area[route].sum()),
-                              "fer": float(area[fer].sum()), "dest": float(area[dest].sum())}}
+                              "fer": float(area[fer].sum()), "dest": float(area[dest].sum()),
+                              "prix": float(area[prix].sum())}}
     return out
 
 
@@ -1720,6 +1902,8 @@ def _global_sources():
         ("communes", "Contours des communes (geo.api.gouv.fr)", [RAW / "idf_communes.gpkg"]),
         ("airbruit", "Indice air-bruit (Bruitparif)", [RAW / "airbruit2024.zip"]),
         ("drieat", "Bruit ferroviaire (DRIEAT)", [RAW / "drieat_index.json"] + sorted((RAW / "drieat").glob("*.gpkg"))),
+        ("dvf", "Ventes immobilières (DVF géolocalisées)",
+         [RAW / "dvf" / "millesimes.json"] + sorted((RAW / "dvf").glob("[0-9]*_*.csv.gz"))),
     ]
 
 
@@ -1745,7 +1929,7 @@ def _commune_files(code):
 # refaits à chaque reconstruction ; "*" : tout, la grille pouvant changer)
 SOURCE_GROUPS = {"idfm": "transport", "gpe": "transport", "transit": "destinations", "communes": "*", "airbruit": "bruit", "drieat": "bruit",
                  "osm": "transport", "airparif": "air", "bruit_route": "bruit", "bruit_fer": "bruit",
-                 "quartiers": None, "iris": None}
+                 "quartiers": None, "iris": None, "dvf": None}
 
 
 def _groups_for(keys):
@@ -1782,7 +1966,7 @@ def freshness(max_age_days=MAX_AGE_DAYS):
     global_stale = []  # sources communes périmées
     for key, label, files in _global_sources():
         e = summarize(key, label, files)
-        if e and e["stale"]:
+        if e and e["stale"] and key != "dvf":  # DVF : prix.json refaits sans reconstruire (refresh_stale)
             global_stale.append(key)
 
     idx = WEB_DATA / "index.json"
@@ -1814,7 +1998,7 @@ def freshness(max_age_days=MAX_AGE_DAYS):
         summarize(k, COMMUNE_SOURCE_LABELS[k], sorted(fl))
     return {"max_age_days": max_age_days, "cutoff": _iso(cutoff), "oldest": _iso(oldest_all),
             "sources": sources, "communes": communes,
-            "to_update": bool(communes) or bool(global_stale)}
+            "to_update": bool(communes) or bool(global_stale) or any(s["stale"] for s in sources if s["key"] == "dvf")}
 
 
 def _pending_refresh():
@@ -1854,6 +2038,11 @@ def refresh_stale(log=print, on_commune=None, max_age_days=MAX_AGE_DAYS, executo
                 for layer in entry["layers"]:
                     if (RAW / "drieat" / f"{layer.split(':')[-1]}.gpkg").exists():
                         drieat_layer_gpkg(dep, entry["wfs"], layer, log)
+        if any(s["stale"] for s in report["sources"] if s["key"] == "dvf"):
+            log("mise à jour : ventes immobilières DVF")
+            dvf_sales(log)  # millésimes et fichiers retéléchargés (cached), ventes filtrées à nouveau
+            n = add_missing_prix(log)
+            log(f"prix immobiliers recalculés pour {n} communes")
         todo = {c["code"]: c["groups"] for c in report["communes"]}
         REFRESH_STATE.write_text(json.dumps({"pending": todo}))
         done = 0

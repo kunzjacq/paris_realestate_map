@@ -35,7 +35,8 @@ l'autre (navigateur), comme la dernière vue de la carte.
 | Trajet jusqu'à une destination | destination (Châtelet-Les Halles, La Défense, Gare de Lyon, Saint-Lazare, Montparnasse, Gare du Nord ; « Aucune » : pas de filtre), période (pointe du matin 7 h 30 – 9 h 30, milieu de journée 11 h – 15 h, en semaine) et durée porte à porte maximale (15 à 90 min) : trajet jusqu'à une gare dans le mode choisi (à pied ou à vélo), puis transports en commun ; avec des lignes en projet cochées, réseau prévu fin 2027 ou fin 2031 (le plus récent avant la date du curseur), durées estimées signalées au survol |
 | Pollution de l'air | case « Filtrer par la pollution » (décochée : critère ignoré, réglages conservés) ; un curseur par polluant (NO₂, PM2.5, PM10, moyennes annuelles), repères OMS et UE 2030 |
 | Bruit des transports | case « Filtrer par le bruit » (décochée : critère ignoré, réglages conservés) ; Lden routier et ferroviaire maximal (de < 75 à < 45 dB), indice global Bruitparif (3 niveaux) |
-| Affichage | couche de contexte (temps de trajet, temps jusqu'à la destination, polluants, bruits), zone retenue, contour de la zone atteignable, quartiers |
+| Prix immobilier | case « Filtrer par le prix » (décochée par défaut) ; appartements ou maisons, prix médian maximal de 3 000 à 15 000 €/m² (pas de 250 €) : médiane du quartier, à défaut (moins de 10 ventes de ce type, partie de commune hors quartiers, commune sans quartiers) celle de la commune ; prix inconnu (commune de moins de 10 ventes) : point accepté |
+| Affichage | couche de contexte (temps de trajet, temps jusqu'à la destination, polluants, bruits, prix au m² des appartements ou des maisons), zone retenue, contour de la zone atteignable, quartiers |
 | Communes | liste repliable (clic sur le titre) : case pour inclure ou non la commune, centrage, retrait ; recherche, « Ajouter les communes visibles », suivi des constructions. « ⚠ route » / « ⚠ fer » : bruit connu sur moins de 90 % de la commune |
 | Données | âge des données et bouton de mise à jour de celles de plus de 6 mois (voir « Serveur ») |
 | Zone retenue | repliable : surface retenue totale et par commune, part de la surface respectant chaque critère seul |
@@ -58,8 +59,10 @@ l'autre (navigateur), comme la dernière vue de la carte.
   temps à pied et à vélo (arrondis à la minute), bruit routier, ferroviaire et indice global, NO₂ / PM2.5 /
   PM10 (pastille verte sous la recommandation OMS, jaune jusqu'à la valeur limite UE 2030, rouge au-delà),
   durée porte à porte jusqu'à la destination choisie avec la gare de départ et la ligne prise (« via
-  Saint-Maur-des-Fossés - Créteil (RER A, 23 min) »), et la liste des raisons d'exclusion quand le point est
-  hors de la zone retenue.
+  Saint-Maur-des-Fossés - Créteil (RER A, 23 min) »), le prix médian au m² des appartements et des maisons
+  du quartier avec le nombre de ventes (quartiles en infobulle ; celui de la commune, signalé, si le
+  quartier a moins de 10 ventes de ce type, comme pour le filtre), et la liste
+  des raisons d'exclusion quand le point est hors de la zone retenue.
 - **Noms des communes** téléchargées, dessinés au-dessus des zones à partir du zoom 13. Leur emplacement, comme
   celui des noms de quartiers, est calculé par le pipeline (point le plus éloigné des bords, `polylabel`) :
   calculé dans le navigateur, il bloquait l'affichage ~3,5 s au démarrage.
@@ -67,6 +70,12 @@ l'autre (navigateur), comme la dernière vue de la carte.
   couche de contexte : un polygone lissé par niveau (temps, classes de bruit, indice global ; polluants en 7
   bandes aux couleurs de la légende), îlots de moins de 3 pixels omis, retracé en zoomant d'au moins deux
   niveaux.
+- **Prix au m²** (couche de contexte) : chaque quartier (la commune, si elle n'a pas de quartiers) est teinté
+  selon le prix médian des ventes des appartements ou des maisons, en dégradé continu de ≤ 2 000 à
+  ≥ 12 000 €/m² (couleur interpolée entre les repères de la légende : pas d'effet de seuil) ;
+  un quartier de moins de 10 ventes de ce type est hachuré, sur la couleur du prix médian de la commune
+  (celui que retiennent le filtre et l'encadré de survol) ; hachures seules si la commune elle-même a trop peu
+  de ventes. L'autre type de logement n'est jamais mélangé, pour garder des couleurs lisibles.
 
 ## Serveur
 
@@ -84,7 +93,8 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
 4. **Mises à niveau des données existantes** : résumé des plages de pollution et emplacement du nom ajoutés
    aux communes qui ne les ont pas ; quartiers (`quartiers.geojson`, `quartiers_limites.geojson`) calculés pour les communes qui
    n'en ont pas ou dont le calcul est antérieur (`QUARTIERS_FORMAT` dans `pipeline.py`), sans reconstruire
-   les communes ; versions compressées `.gz` créées ou rafraîchies ; communes dont un groupe de couches a un
+   les communes ; prix immobiliers (`prix.json`) calculés pour les communes qui n'en ont pas, ou dont le
+   calcul est antérieur à leurs quartiers, aux dernières ventes téléchargées ou à `PRIX_FORMAT` ; versions compressées `.gz` créées ou rafraîchies ; communes dont un groupe de couches a un
    format antérieur (`FORMATS` dans `pipeline.py`, voir « File de construction ») mises en file de
    reconstruction.
 5. **Cache du fond de carte** : tuiles de plus de 6 mois supprimées (en arrière-plan).
@@ -156,7 +166,7 @@ Exception : les quartiers d'un calcul antérieur (`QUARTIERS_FORMAT`) ne sont re
 Chaque fichier téléchargé (`data/raw/`) est daté de son téléchargement. `GET /api/freshness` les regroupe par
 source : gares et accès IDFM, horaires des transports (GTFS), gares du Grand Paris Express en projet, contours des communes, indice air-bruit, bruit DRIEAT (communs à toutes les
 communes), réseau OSM, pollution Airparif, bruit routier et ferroviaire Bruitparif, quartiers Linternaute,
-contours IRIS de l'IGN (propres à chaque commune). Les tuiles du fond de carte ont leur propre durée de vie
+contours IRIS de l'IGN (propres à chaque commune), ventes immobilières DVF. Les tuiles du fond de carte ont leur propre durée de vie
 (voir « Fichiers servis »).
 Une commune est à mettre à jour si l'une de ses données a plus de 6 mois (`MAX_AGE_DAYS` dans `pipeline.py`),
 si une donnée commune a plus de 6 mois, ou si une mise à jour précédente a été interrompue avant elle.
@@ -171,7 +181,8 @@ La mise à jour (`POST /api/refresh`) passe par la file de construction :
 3. les communes concernées sont reconstruites une à une, en ne recalculant que les groupes de couches des
    sources périmées (réseau OSM ou gares : transports et destinations ; horaires : destinations ; Airparif :
    air ; Bruitparif ou DRIEAT : bruit ; quartiers ou IRIS : quartiers seulement ; contours des communes :
-   tout), à côté de leur version actuelle, qui reste servie jusqu'au remplacement. La liste des communes restant à faire (avec leurs groupes) est
+   tout ; ventes DVF : seulement `prix.json`, refait sans reconstruire la commune, avec les derniers
+   millésimes publiés), à côté de leur version actuelle, qui reste servie jusqu'au remplacement. La liste des communes restant à faire (avec leurs groupes) est
    gardée dans `data/raw/refresh_state.json` pour reprendre une mise à jour interrompue.
 
 Aucune donnée n'est donc effacée avant que sa nouvelle version soit disponible.
@@ -191,12 +202,14 @@ règles que l'application.
 ```json
 POST /api/stats
 {"codes": ["94068", "94015"], "mode": "walk", "networks": ["rer", "transilien"],
- "walk": 10, "air": {"no2": 20}, "bp": 3, "route": 60, "fer": 999}
+ "walk": 10, "air": {"no2": 20}, "bp": 3, "route": 60, "fer": 999,
+ "prix_type": "appartement", "prix_max": 7000}
 ```
 
 `walk` : minutes (ou `null` sans filtre de temps) ; `air` : seuils en µg/m³ des polluants filtrés ;
 `bp` : indice Bruitparif maximal (1 à 3) ; `route`, `fer` : Lden strictement inférieur (999 = pas de
-filtre). La réponse donne, par commune, la surface totale, la surface retenue et la surface respectant
+filtre) ; `prix_type` (`appartement` ou `maison`) et `prix_max` : prix médian maximal en €/m² (`null` ou
+absent : pas de filtre ; prix inconnu accepté). La réponse donne, par commune, la surface totale, la surface retenue et la surface respectant
 chaque critère pris seul (m²). Les couches nécessaires sont gardées en mémoire après le premier appel.
 
 Servie par un simple serveur statique (`python3 -m http.server -d web`), l'application fonctionne en lecture
@@ -245,6 +258,7 @@ taille de cellule…
 | Indice global (option) | Bruitparif/Airparif, cartographie air-bruit 2024 | 3 niveaux, route + fer + avion |
 | Contours des communes | geo.api.gouv.fr | |
 | Quartiers | Noms et regroupement : Linternaute, carte « Liste des quartiers » des pages ville (données Yanport, endpoint `/od/map`, cache `data/raw/quartiers/`). Contours : IRIS de l'IGN (Géoplateforme, WFS `STATISTICALUNITS.IRIS:contours_iris`, cache `data/raw/iris/`) | chaque IRIS va au quartier Linternaute qui en contient la plus grande part ; découpés par le contour de la commune ; `quartiers.geojson` par commune, et `quartiers_limites.geojson` (chaque limite entre quartiers une seule fois, hors limite communale, pour des pointillés nets) ; noms corrigés au besoin dans `QUARTIER_RENAMES` (`pipeline.py`) ; à Paris, code postal de l'arrondissement ajouté au nom (« Père Lachaise-Réunion (75020) »), d'après l'IRIS qui couvre la plus grande partie du quartier |
+| Prix au m² | Demandes de valeurs foncières (DGFiP), version géolocalisée d'Etalab (`files.data.gouv.fr/geo-dvf`, un fichier par département et par année, cache `data/raw/dvf/`), Licence Ouverte | ventes des 3 derniers millésimes publiés (`DVF_YEARS`, 2023-2025) ; seulement les ventes d'**un seul logement** (appartement ou maison, avec ou sans cave ni parking), sans local d'activité : une mutation (un acte) regroupe tous les biens vendus ensemble, et la vente d'un immeuble entier à un promoteur ou à un bailleur (souvent 1 000-1 500 €/m² pour des dizaines de logements) en est donc écartée, comme les ventes en l'état futur d'achèvement (neuf), adjudications, échanges et terrains à bâtir ; prix au m² = valeur foncière / surface bâtie, hors surfaces < 9 m² et prix < 1 000 ou > 40 000 €/m² ; ventes filtrées en cache (`data/raw/dvf/ventes_*.csv.gz`). Par commune (`prix.json`) : nombre de ventes, médiane et quartiles du prix au m² par type, pour la commune et chaque quartier (ventes situées par leurs coordonnées) ; médiane seulement à partir de 10 ventes (`PRIX_MIN_SALES`). Pour le filtre, couches `prix_appartement.bin` et `prix_maison.bin` (uint16, €/m², 0 : inconnu) sur la grille de la commune : médiane du quartier de chaque cellule, à défaut celle de la commune ; hors de `meta.json` → `layers` et du paquet, refaites avec `prix.json` sans reconstruire la commune |
 
 Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'environ 10 m par commune.
 
@@ -310,6 +324,13 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
   couverts. Un échec de téléchargement n'empêche pas la construction : les quartiers manquent et le serveur
   réessaie à son démarrage suivant. Après une modification de leur calcul (`QUARTIERS_FORMAT` dans
   `pipeline.py`), les quartiers sont recalculés au démarrage du serveur, sans reconstruire les communes.
+- Prix au m² : prix de vente médians des logements anciens sur 3 ans, sans correction de l'évolution des prix
+  pendant la période ni de la qualité des biens (étage, état, terrain des maisons). Surface bâtie déclarée,
+  pas la surface Carrez. Une maison achetée pour être démolie reste comptée (vente d'un seul logement) ; la
+  médiane limite l'effet de ces cas. Les ventes d'un appartement avec un local commercial sont écartées. À
+  Paris, peu de quartiers ont assez de ventes de maisons. Les DVF ne couvrent pas l'Alsace-Moselle ni
+  Mayotte (sans effet ici) et sont publiées deux fois par an, avec quelques mois de retard. Premier calcul :
+  téléchargement de ~30 Mo et filtrage en ~15 s, puis ~7 s pour 190 communes.
 
 ## Dépôt git et données
 
@@ -341,7 +362,8 @@ secondes si la commande `xz` est installée (tous les cœurs), sinon en ~7 min p
 (un seul cœur). Sont omis les fichiers recalculables : les versions compressées `.gz` et les paquets
 `layers.pack` de `web/data/` (recréés au démarrage du serveur), `data/raw/airbruit2024.gpkg` (conversion de
 `airbruit2024.zip`, refaite à la demande), les tuiles du fond de carte (`data/raw/tiles/`, retéléchargées à
-la demande) et les fichiers tirés des horaires (`data/raw/gtfs_rail_*.npz`, `data/raw/transit_*.json`). Avec `--no-cache`, seul `web/data/` est archivé : l'application fonctionne, mais ajouter ou
+la demande), les fichiers tirés des horaires (`data/raw/gtfs_rail_*.npz`, `data/raw/transit_*.json`) et les
+ventes DVF filtrées (`data/raw/dvf/ventes_*.csv.gz`). Avec `--no-cache`, seul `web/data/` est archivé : l'application fonctionne, mais ajouter ou
 reconstruire une commune retéléchargera ses données.
 
 **`restore`** reconnaît la compression (gzip, xz, bzip2 ou aucune) d'après le contenu du fichier, quel

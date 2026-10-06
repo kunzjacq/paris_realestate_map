@@ -17,6 +17,9 @@ const COLORS = {
   lden_route: { 40: "#4bc700", 45: "#53fd00", 50: "#b7fd72", 55: "#fcfd00", 60: "#fda900", 65: "#fd0000", 70: "#d300fc", 75: "#950064" },
   lden_fer: { 40: "#4bc700", 45: "#53fd00", 50: "#b7fd72", 55: "#fcfd00", 60: "#fda900", 65: "#fd0000", 70: "#d300fc", 75: "#950064" },
   ramp: ["#fcfdbf", "#fec287", "#fb8861", "#e65164", "#b73779", "#822681", "#51127c"],
+  // prix médian au m² : prix (€/m²) -> couleur ; entre deux prix, couleur interpolée (pas d'effet de seuil)
+  prix: { 2000: "#ffffd9", 3000: "#edf8b1", 4000: "#c7e9b4", 5000: "#7fcdbb", 6000: "#41b6c4", 7000: "#1d91c0",
+          8000: "#225ea8", 10000: "#253494", 12000: "#081d58" },
 };
 // clés du stockage du navigateur : préfixe idf_livability_map. (anciennement immo_map. : reprises une fois)
 const STORAGE_PREFIX = "idf_livability_map.", OLD_STORAGE_PREFIX = "immo_map.";
@@ -57,7 +60,10 @@ const state = {
   limits: { walk: 10, bike: 10 },  // seuil propre à chaque mode, retrouvé quand on revient au mode
   walkFilter: true,
   airFilter: true,     // false : la pollution n'est pas un critère (réglages conservés)
-  noiseFilter: true,   // false : le bruit n'est pas un critère (réglages conservés)    // false : le temps de trajet n'est pas un critère
+  noiseFilter: true,   // false : le bruit n'est pas un critère (réglages conservés)
+  prixFilter: false,   // filtre « prix maximal » (prix médian au m² du quartier)
+  prixType: "appartement",  // type de logement du filtre : "appartement" ou "maison"
+  prixMax: 8000,       // prix médian maximal (€/m²)    // false : le temps de trajet n'est pas un critère
   travelMode: "walk",  // "walk" ou "bike"
   networks: { rer: true, transilien: true, metro: true },  // réseaux pris en compte pour le temps de trajet
   trams: {},           // lignes de tramway prises en compte (« 3a » : true) ; aucune par défaut
@@ -117,11 +123,14 @@ async function loadCommuneMeta(code, built) {
   // quartiers (Linternaute) : absents pour certaines communes, facultatifs pour l'affichage
   const [quartiersGeo, limitsGeo] = meta.quartiers ? await Promise.all(["quartiers", "quartiers_limites"].map(
     (n) => getJSON(`${base}${n}.geojson`).catch(() => null))) : [null, null];
+  // prix médian au m² (ventes DVF) de la commune et de ses quartiers : absent avant le premier calcul
+  const prix = meta.prix_format ? await getJSON(`${base}prix.json`).catch(() => null) : null;
   const old = communes.get(code);
   if (old) removeCommuneLayers(old);
   communes.set(code, {
     quartiers: quartiersLayer(quartiersGeo, limitsGeo),
     quartierAreas: (quartiersGeo?.features || []).map(quartierArea),
+    prix, outlineGeo,
     code, meta, built, loaded: false, loading: null,
     outlineRings: outlineGeo.features.flatMap((f) => geoRings(f.geometry)),
     outline: L.geoJSON(outlineGeo, { style: { color: "#1f2328", weight: LIMIT_WEIGHT, fill: false }, interactive: false }).addTo(map),
@@ -150,6 +159,13 @@ async function loadCommuneData(c) {
       const buf = await r.arrayBuffer();
       layers[name] = info.dtype === "uint16" ? new Uint16Array(buf) : new Uint8Array(buf);
     }
+  }
+  // prix médian au m² par cellule (prix_<type>.bin, hors paquet : refaites sans reconstruire la commune)
+  if (c.meta.prix_format) {
+    await Promise.all(Object.keys(PRIX_TYPES).map(async (name) => {
+      const r = await fetch(`${base}${name}.bin`, { cache: "no-cache" });
+      if (r.ok) layers[name] = new Uint16Array(await r.arrayBuffer());
+    }));
   }
   if (communes.get(c.code) !== c) return;  // commune retirée ou reconstruite entre-temps
   Object.assign(c, {
@@ -508,6 +524,29 @@ function destChanged() {
   update({ context: state.context === "dest" });
 }
 
+function showPrix() {
+  $("prix-out").textContent = state.prixFilter ? `≤ ${fmtPrix(state.prixMax)}` : "";
+  $("prix-controls").classList.toggle("off", !state.prixFilter);
+  $("prix-type").querySelectorAll("button").forEach((b) =>
+    b.setAttribute("aria-pressed", String(b.dataset.type === state.prixType)));
+  $("prix-max").value = state.prixMax;
+}
+
+function initPrix() {
+  const box = $("prix-filter"), range = $("prix-max"), [lo, hi] = [+range.min, +range.max];
+  box.checked = state.prixFilter;
+  box.addEventListener("change", () => { state.prixFilter = box.checked; showPrix(); update(); });
+  $("prix-type").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b || b.dataset.type === state.prixType) return;
+    state.prixType = b.dataset.type; showPrix(); update();
+  });
+  $("prix-ticks").querySelectorAll("span").forEach((t) => {
+    t.style.left = `${100 * (parseInt(t.textContent.replace(/\s/g, "")) - lo) / (hi - lo)}%`;
+  });
+  range.addEventListener("input", () => { state.prixMax = +range.value; showPrix(); scheduleUpdate(); });
+  showPrix();
+}
+
 function initDest() {
   $("dest").addEventListener("change", () => { state.dest = $("dest").value; destChanged(); });
   $("dest-period").addEventListener("click", (e) => {
@@ -757,7 +796,8 @@ function thresholds() {
   const n = state.noiseFilter;  // case « Filtrer par le bruit » décochée : comme « pas de filtre »
   const t = { walk: state.walkFilter ? limitSec(state.walk) : UNREACHED, bp: n ? state.bpNoise : 3, route: n ? state.ldenRoute : 999,
     fer: n ? state.ldenFer : 999,
-    dest: destKey() ? state.destMax : DEST_NONE };
+    dest: destKey() ? state.destMax : DEST_NONE,
+    prix: state.prixFilter ? state.prixMax : Infinity, prixLayer: `prix_${state.prixType}` };
   for (const a of AIR) t[a.key] = (state.airFilter ? state.air[a.key] ?? Infinity : Infinity) * 10 + 0.5;  // dixièmes de µg/m³
   return t;
 }
@@ -773,8 +813,12 @@ function cellPasses(c, i, t = thresholds()) {
     route: v.lden_route[i] < t.route,  // 0 = non renseigné, accepté ; 40 = moins de 45 dB
     fer: v.lden_fer[i] < t.fer,        // 0 = non renseigné, accepté ; 40 = moins de 45 dB
     dest: !c.destSel || c.destSel[i] <= t.dest,  // couche pas encore chargée : pas de filtre
+    prix: prixPasses(c.L[t.prixLayer], i, t.prix),
   };
 }
+
+// prix médian de la cellule sous le seuil ; 0 (prix inconnu) ou couche absente : accepté
+const prixPasses = (layer, i, max) => !layer || !layer[i] || layer[i] <= max;
 
 function computeCommune(c, t) {
   const { width: W, height: H } = c.meta;
@@ -782,13 +826,13 @@ function computeCommune(c, t) {
   const { no2, pm25, pm10, bp_noise: bpn, lden_route: route, lden_fer: fer } = v;
   const tw = t.walk, tn = t.no2, t25 = t.pm25, t10 = t.pm10, tb = t.bp, tr = t.route, tf = t.fer;
   const dest = c.destSel || (c.noDest ||= new Uint8Array(W * H)), td = c.destSel ? t.dest : DEST_NONE;
-  const match = new Uint8Array(W * H);
-  let total = 0, ok = 0, cWalk = 0, cAir = 0, cBp = 0, cRoute = 0, cFer = 0, cDest = 0;
+  const match = new Uint8Array(W * H), prixL = v[t.prixLayer], tp = t.prix;
+  let total = 0, ok = 0, cWalk = 0, cAir = 0, cBp = 0, cRoute = 0, cFer = 0, cDest = 0, cPrix = 0;
   for (let k = 0; k < idx.length; k++) {   // cellules de la commune seulement
     const i = idx[k], a = area[k];
     const w = walk[i] <= tw;
     const ai = no2[i] <= tn && pm25[i] <= t25 && pm10[i] <= t10;
-    const bp = bpn[i] <= tb, ro = route[i] < tr, fe = fer[i] < tf, de = dest[i] <= td;
+    const bp = bpn[i] <= tb, ro = route[i] < tr, fe = fer[i] < tf, de = dest[i] <= td, pr = prixPasses(prixL, i, tp);
     total += a;
     if (w) cWalk += a;
     if (ai) cAir += a;
@@ -796,15 +840,17 @@ function computeCommune(c, t) {
     if (ro) cRoute += a;
     if (fe) cFer += a;
     if (de) cDest += a;
-    if (w && ai && bp && ro && fe && de) { match[i] = 1; ok += a; }
+    if (pr) cPrix += a;
+    if (w && ai && bp && ro && fe && de && pr) { match[i] = 1; ok += a; }
   }
-  return { match, total, ok, crit: { walk: cWalk, air: cAir, bp: cBp, route: cRoute, fer: cFer, dest: cDest } };
+  return { match, total, ok, crit: { walk: cWalk, air: cAir, bp: cBp, route: cRoute, fer: cFer, dest: cDest, prix: cPrix } };
 }
 
 // ------------------------------------------------------------------ rendu : contours lissés
 
 const zoneRenderer = L.canvas({ padding: 0.3, pane: "zone" });  // panneau créé dans initMap
 const contextRenderer = L.canvas({ padding: 0.3, pane: "context" });
+const hatchRenderer = L.svg({ padding: 0.3, pane: "context" });  // hachures (motif SVG #prix-hatch d'index.html)
 const isoRenderer = L.canvas({ padding: 0.3, pane: "iso" });
 const ISO_STYLE = { pane: "iso", renderer: isoRenderer, color: "#08519c", weight: 1.5, dashArray: "5 4", fill: false, interactive: false };
 
@@ -1032,6 +1078,7 @@ function drawContext(only = null) {
     if (!isVisible(c)) { c.contextDirty = true; continue; }
     c.contextDirty = false;
     c.contextZoom = z;
+    if (key in PRIX_TYPES) { drawPrix(c, key); continue; }
     // couche de destination pas encore arrivée : rien à tracer, elle le sera à son arrivée (ensureNetworkLayers)
     if (key === "dest" && (!destKey() || !c.destSel)) continue;
     const { rank, colors } = contextLevels(c, key);
@@ -1044,6 +1091,73 @@ function drawContext(only = null) {
         interactive: false, stroke: false, fillColor: color, fillOpacity: 1, fillRule: "evenodd" }));
     });
   }
+}
+
+// ------------------------------------------------------------------ prix immobiliers
+// prix médian au m² des ventes DVF (pipeline : write_prix), par quartier ou, sans quartiers, pour la commune
+const PRIX_TYPES = { prix_appartement: "appartement", prix_maison: "maison" };
+const PRIX_LABELS = { appartement: "Appartements", maison: "Maisons" };
+const fmtPrix = (v) => `${Math.round(v).toLocaleString("fr-FR")} €/m²`;
+
+// couleur d'un prix : interpolée (RVB) entre les deux prix voisins de COLORS.prix, bornée aux extrêmes
+const PRIX_STOPS = Object.entries(COLORS.prix).map(([v, hex]) => [+v, [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16))]);
+function prixColor(med) {
+  const i = PRIX_STOPS.findIndex(([v]) => v > med);
+  if (i === 0 || i === -1) return COLORS.prix[PRIX_STOPS[i === 0 ? 0 : PRIX_STOPS.length - 1][0]];
+  const [[v0, c0], [v1, c1]] = [PRIX_STOPS[i - 1], PRIX_STOPS[i]], f = (med - v0) / (v1 - v0);
+  return "#" + c0.map((x, k) => Math.round(x + (c1[k] - x) * f).toString(16).padStart(2, "0")).join("");
+}
+
+// couche de contexte des prix, pour le type affiché seulement (l'autre type n'est jamais mélangé) : quartiers
+// (ou commune sans quartiers) teintés selon leur médiane. Quartier de trop peu de ventes : couleur de la
+// médiane de la commune, hachurée (comme le filtre et l'encadré de survol) ; commune elle-même de trop peu de
+// ventes : hachures seules. Tracé une fois : les contours ne dépendent pas du zoom.
+function drawPrix(c, key) {
+  c.contextZoom = Infinity;
+  if (!c.prix) return;
+  const type = PRIX_TYPES[key], communeMed = c.prix.commune[type]?.med;
+  const base = { pane: "context", interactive: false, stroke: false, fillOpacity: 1 };
+  const fill = (med) => ({ ...base, renderer: contextRenderer, fillColor: prixColor(med) });
+  // hachures en SVG, au-dessus du canvas (leaflet.css) ; traits clairs sur une couleur sombre
+  const hatch = { ...base, renderer: hatchRenderer,
+    fillColor: communeMed && isDark(prixColor(communeMed)) ? "url(#prix-hatch-light)" : "url(#prix-hatch)" };
+  const add = (layer, med) => {
+    if (med) { c.context.addLayer(layer(fill(med))); return; }
+    if (communeMed) c.context.addLayer(layer(fill(communeMed)));
+    c.context.addLayer(layer(hatch));
+  };
+  if (c.quartierAreas.length) {
+    for (const q of c.quartierAreas) add((o) => L.polygon(q.latlngs, o), c.prix.quartiers[q.nom]?.[type]?.med);
+  } else {
+    add((o) => L.geoJSON(c.outlineGeo, { ...o, style: () => o }), communeMed);
+  }
+}
+
+// couleur sombre (luminance relative < 0,25) : hachures claires par-dessus
+function isDark(hex) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map((v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.25;
+}
+
+// lignes de l'encadré de survol : médiane de chaque type de logement dans le quartier, à défaut (moins de
+// min_sales ventes, commune sans quartiers) dans la commune, comme le filtre, signalée « commune ». Lignes
+// courtes (l'encadré ne s'élargit pas : une valeur trop longue repoussait les autres hors du cadre) ;
+// quartiles et ventes du quartier en infobulle
+function prixHtml(c, quartier) {
+  if (!c.prix) return "";
+  const { years } = c.prix, q = quartier && c.prix.quartiers[quartier.nom];
+  const ventes = (n) => n ? `${n.toLocaleString("fr-FR")} vente${n > 1 ? "s" : ""}` : "aucune vente";
+  const rows = Object.entries(PRIX_LABELS).map(([t, label]) => {
+    const own = q?.[t], fallback = !own?.med, v = fallback ? c.prix.commune[t] : own;
+    if (!v?.med) return `<tr><td><i class="sw hatch"></i>${label}</td><td class="muted">${ventes(v?.n)}</td></tr>`;
+    const tip = `moitié des ventes entre ${fmtPrix(v.q1)} et ${fmtPrix(v.q3)} (${ventes(v.n)}`
+      + (fallback && q ? ` dans la commune ; quartier : ${ventes(own?.n)}, trop peu)` : ")");
+    const fail = state.prixFilter && t === state.prixType && v.med > state.prixMax ? ' class="fail"' : "";
+    return `<tr${fail} title="${tip}"><td><i class="sw" style="background:${prixColor(v.med)}"></i>${label}</td>`
+      + `<td>${fmtPrix(v.med)} <span class="muted">${fallback && q ? "commune" : ventes(v.n)}</span></td></tr>`;
+  }).join("");
+  return `<div class="prix">Prix médian au m², ventes ${years[0]}–${years[1]} :</div><table class="noise">${rows}</table>`;
 }
 
 // communes apparues, ou zoom avant d'au moins deux niveaux depuis leur tracé (contours trop grossiers) ; en
@@ -1061,6 +1175,16 @@ function renderLegend() {
     const { min, max } = airRange[key];
     legend.innerHTML = `<div class="ramp" style="background:linear-gradient(90deg,${COLORS.ramp.join(",")})"></div>
       <div class="ends"><span>${fmt(min)} µg/m³</span><span>${fmt(max)} µg/m³</span></div>`;
+    return;
+  }
+  if (key in PRIX_TYPES) {  // dégradé continu, comme la couleur des quartiers
+    const lo = PRIX_STOPS[0][0], hi = PRIX_STOPS[PRIX_STOPS.length - 1][0], k = (v) => (v / 1000).toLocaleString("fr-FR");
+    const stops = Object.entries(COLORS.prix).map(([v, h]) => `${h} ${(100 * (v - lo) / (hi - lo)).toFixed(1)}%`);
+    const { years, min_sales: n = 10 } = loadedCommunes().find((c) => c.prix)?.prix || {};
+    legend.innerHTML = `<div class="ramp" style="background:linear-gradient(90deg,${stops.join(",")})"></div>
+      <div class="ends">${[2, 4, 6, 8, 10, 12].map((v, i, a) => `<span>${i === 0 ? "≤ " : i === a.length - 1 ? "≥ " : ""}${k(v * 1000)}</span>`).join("")}</div>`
+      + `<span><i class="sw hatch"></i>moins de ${n} ventes dans le quartier (couleur : prix de la commune)</span>`
+      + `<p class="note">k€/m², prix médian des ventes${years ? ` ${years[0]}–${years[1]}` : ""} par quartier.</p>`;
     return;
   }
   const label = key === "walk" ? (k) => `≤ ${k} min` : key === "dest" ? (k) => +k === 120 ? "> 90 min" : `≤ ${k} min`
@@ -1095,7 +1219,7 @@ function renderResult(results) {
   const active = sortedCommunes().filter((c) => isActive(c.code));
   if (!active.length) { $("result").innerHTML = '<p class="note">Aucune commune sélectionnée.</p>'; return; }
   let total = 0, ok = 0;
-  const crit = { walk: 0, air: 0, route: 0, fer: 0, bp: 0, dest: 0 };
+  const crit = { walk: 0, air: 0, route: 0, fer: 0, bp: 0, dest: 0, prix: 0 };
   const missing = active.filter((c) => !results.has(c.code));
   const rows = active.filter((c) => results.has(c.code)).map((c) => {
     const r = results.get(c.code);
@@ -1104,7 +1228,8 @@ function renderResult(results) {
     return `<span>${c.meta.nom}</span><span>${km2(r.ok)} km²</span><span class="muted">${pct(r.ok, r.total)} %</span>`;
   }).join("");
   const critTxt = [["Marche", crit.walk], ["Air", crit.air], ["Bruit routier", crit.route], ["Bruit ferroviaire", crit.fer],
-    ["Indice global", crit.bp], ...(destKey() ? [[destName(), crit.dest]] : [])]
+    ["Indice global", crit.bp], ...(destKey() ? [[destName(), crit.dest]] : []),
+    ...(state.prixFilter ? [[`Prix ${PRIX_LABELS[state.prixType].toLowerCase()}`, crit.prix]] : [])]
     .map(([n, a]) => `${n} ${pct(a, total)} %`).join(" · ");
   $("result").innerHTML = `
     <div class="big">${km2(ok)} km² <small>soit ${pct(ok, total)} % de la surface</small></div>
@@ -1158,6 +1283,7 @@ function requestStats() {
       bp: state.noiseFilter ? state.bpNoise : 3, route: state.noiseFilter ? state.ldenRoute : 999,
       fer: state.noiseFilter ? state.ldenFer : 999,
       dest_key: destKey(), dest_max: state.destMax,
+      prix_type: state.prixType, prix_max: state.prixFilter ? state.prixMax : null,
     };
     try {
       const r = await fetch("api/stats", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1453,6 +1579,10 @@ function exclusionHtml(c, i, ok) {
     const m = c.destSel[i];
     reasons.push(`${destName()} ${m === DEST_NONE ? "à plus de 2 h" : `en ${m} min`} <span class="muted">(seuil ${state.destMax} min)</span>`);
   }
+  if (!ok.prix) {
+    reasons.push(`Prix ${PRIX_LABELS[state.prixType].toLowerCase()} ${fmtPrix(v[`prix_${state.prixType}`][i])}`
+      + ` <span class="muted">(seuil ${fmtPrix(state.prixMax)})</span>`);
+  }
   if (!reasons.length) return '<div class="verdict ok">✓ Dans la zone retenue</div>';
   return `<div class="verdict"><span class="ko">✗ Exclu :</span><ul>${reasons.map((r) => `<li>${r}</li>`).join("")}</ul></div>`;
 }
@@ -1511,6 +1641,7 @@ function renderHover() {
     const x = v[a.key][i] / 10;
     return `<tr${bad(a.key)}><td>${airSw(a, x)}${a.label} ${c.meta.air_year}</td><td>${fmt(x)} µg/m³</td></tr>`;
   }).join("")}</table>`;
+  html += prixHtml(c, quartier);
   html += exclusionHtml(c, i, ok);
   hoverBox.innerHTML = html;
   hoverBox.hidden = false;
@@ -1702,6 +1833,7 @@ function initControls() {
   quartiersBtn.title = state.showQuartiers ? "Masquer les quartiers" : "Afficher les quartiers";
   initGoto();
   initDest();
+  initPrix();
   makeFoldable("toggle-result", $("result"), STORAGE_PREFIX + "resultFolded", "la zone retenue");
   initCommuneList();
 }
