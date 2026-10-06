@@ -1638,9 +1638,31 @@ function initControls() {
   bind("context", "context", true);
   bind("show-zone", "showZone", false, "checked");
   bind("show-iso", "showIso", false, "checked");
+  // quartiers (limites, noms, surbrillance) : case du menu et bouton sur la carte, synchronisés
   const quartiersBox = $("show-quartiers");
+  const QuartiersControl = L.Control.extend({
+    options: { position: "topleft" },
+    onAdd() {
+      const btn = L.DomUtil.create("button", "leaflet-control map-toggle");
+      btn.type = "button"; btn.textContent = "Quartiers";
+      L.DomEvent.disableClickPropagation(btn);
+      L.DomEvent.on(btn, "click", () => setQuartiers(!state.showQuartiers));
+      return btn;
+    },
+  });
+  const quartiersBtn = new QuartiersControl().addTo(map).getContainer();
+  const setQuartiers = (on) => {
+    state.showQuartiers = on;
+    quartiersBox.checked = on;
+    quartiersBtn.setAttribute("aria-pressed", String(on));
+    quartiersBtn.title = on ? "Masquer les quartiers" : "Afficher les quartiers";
+    saveState();
+    showQuartiers();
+  };
+  quartiersBox.addEventListener("change", () => setQuartiers(quartiersBox.checked));
   quartiersBox.checked = state.showQuartiers;
-  quartiersBox.addEventListener("change", () => { state.showQuartiers = quartiersBox.checked; saveState(); showQuartiers(); });
+  quartiersBtn.setAttribute("aria-pressed", String(state.showQuartiers));
+  quartiersBtn.title = state.showQuartiers ? "Masquer les quartiers" : "Afficher les quartiers";
   initGoto();
   initDest();
   makeFoldable("toggle-result", $("result"), "immo_map.resultFolded", "la zone retenue");

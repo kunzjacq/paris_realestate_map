@@ -169,6 +169,12 @@ body.panel-hidden #panel, body.panel-hidden #resizer { display: none; }
   font: 600 13px system-ui, sans-serif; cursor: pointer; color: var(--ink);
 }
 .leaflet-control.show-panel:hover { color: var(--accent); }
+.leaflet-control.map-toggle {
+  border: 2px solid rgba(0,0,0,.2); border-radius: 4px; background: #fff; padding: 4px 8px;
+  font: 600 12px system-ui, sans-serif; cursor: pointer; color: var(--muted);
+}
+.leaflet-control.map-toggle[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.leaflet-control.map-toggle:hover { border-color: var(--accent); }
 
 @media (max-width: 760px) {
   #resizer { display: none; }

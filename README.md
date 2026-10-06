@@ -46,7 +46,7 @@ l'autre (navigateur), comme la dernière vue de la carte.
   communes téléchargées est assombri. Avec une couche de contexte, la zone n'est pas teintée et son trait est noir.
 - **Communes non téléchargées** : voile gris hachuré. Un clic dessus propose « Ajouter cette commune ».
 - **Contour pointillé bleu** : zone atteignable dans le temps choisi (temps de trajet seul).
-- **Quartiers** (option « Quartiers » d'« Affichage ») : limites en pointillés gris, de la même épaisseur que
+- **Quartiers** (option « Quartiers » d'« Affichage », ou bouton « Quartiers » sous le zoom de la carte) : limites en pointillés gris, de la même épaisseur que
   celles des communes, à partir du zoom 13 ; noms en italique à partir du zoom 15 ; le quartier sous la souris
   est éclairci et cerné d'un trait plein ; l'encadré de survol indique la commune et le quartier du point.
 - **Gares** : seules les 3 plus proches de la souris sont affichées, avec leurs accès et leur nom (rose : RER,
