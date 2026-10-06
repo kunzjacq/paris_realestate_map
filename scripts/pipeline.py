@@ -79,7 +79,7 @@ AIR_YEAR = 2025
 # transport : gares et temps jusqu'à la gare la plus proche de chaque réseau ; destinations : temps porte à
 # porte jusqu'aux destinations (recalculé avec transport : ses couches désignent les gares par leur rang) ;
 # air : Airparif ; bruit : Bruitparif et DRIEAT.
-FORMATS = {"grille": 9, "transport": 13, "destinations": 1, "air": 9, "bruit": 9}
+FORMATS = {"grille": 9, "transport": 13, "destinations": 2, "air": 9, "bruit": 9}
 DATA_FORMAT = 15  # format global (meta.json, index.json ; DATA_FORMAT de web/app.js) : à incrémenter avec FORMATS
 AIR_POLLUTANTS = ["no2", "pm25", "pm10"]
 # réseaux ferrés pris en compte pour le temps de marche : mode IDFM -> clé utilisée dans les données
@@ -1224,14 +1224,17 @@ def build_commune(code, log=print, groups=None, index=True):
         x, y, graphs = build_graphs(*load_osm(osm_bounds(commune_l93), lambda m: log(f"{nom} : {m}")))
         # temps porte à porte jusqu'aux destinations : durée en transports depuis chaque gare (horaires IDFM)
         transit = transit_tables(lambda m: log(f"{nom} : {m}"))
+        # clés <destination>_<période> (réseau actuel) et <destination>_<période>_<scénario> (réseau prévu)
         dest_costs, station_transit = {}, [{} for _ in range(len(stations))]
-        for dk, per in (transit["tables"] if transit else {}).items():
-            for pk, table in per.items():
-                key = f"{dk}_{pk}"
-                dest_costs[key] = np.array([table[z]["median"] * 60 if z in table else np.nan for z in stations.zdc])
-                for i, z in enumerate(stations.zdc):
-                    if z in table:
-                        station_transit[i][key] = [table[z]["median"], table[z]["line"]]
+        for sk, dests in (transit["tables"] if transit else {}).items():
+            for dk, per in dests.items():
+                for pk, table in per.items():
+                    key = f"{dk}_{pk}" + ("" if sk == "actuel" else f"_{sk}")
+                    dest_costs[key] = np.array([table[z]["median"] * 60 if z in table else np.nan
+                                                for z in stations.zdc])
+                    for i, z in enumerate(stations.zdc):
+                        if z in table:  # [durée médiane (min), ligne prise, part estimée (lignes en projet)]
+                            station_transit[i][key] = [table[z]["median"], table[z]["line"], table[z].get("proj", 0)]
         if len(stations):
             # Temps de trajet réels jusqu'à la gare la plus proche, par mode (marche, vélo) et par réseau
             # (l'application combine les réseaux choisis pour le mode choisi), et jusqu'aux destinations
@@ -1442,7 +1445,8 @@ def network_catalog():
     """Lignes de tramway en service et arrêts en projet par date, pour les choix de l'application :
     {"trams": ["1", "2", "3a"…], "gpe": [dates], "tram_projects": {ligne: [dates]}} ; listes vides si les
     données manquent."""
-    out = {"trams": [], "gpe": [], "tram_projects": {}, "destinations": {}, "periods": {}, "transit_day": None}
+    out = {"trams": [], "gpe": [], "tram_projects": {}, "destinations": {}, "periods": {}, "transit_day": None,
+           "dest_scenarios": {}}
     try:
         gares, _ = idfm_tables()
         lines = {rc.split()[1] for m, rc in zip(gares["mode"], gares.res_com) if m in TRAM_MODES}
@@ -1455,7 +1459,8 @@ def network_catalog():
         out["tram_projects"] = {l: sorted(v) for l, v in sorted(out["tram_projects"].items())}
         transit = transit_tables(lambda m: None)
         if transit:
-            out.update(destinations=transit["destinations"], periods=transit["periods"], transit_day=transit["day"])
+            out.update(destinations=transit["destinations"], periods=transit["periods"], transit_day=transit["day"],
+                       dest_scenarios={k: v for k, v in transit["scenarios"].items() if v})
     except Exception as e:
         print(f"lignes de tramway ou arrêts en projet indisponibles ({e})", flush=True)
     return out
@@ -1592,8 +1597,8 @@ def zone_stats(codes, q):
         route = v("lden_route") < q.get("route", 999)
         fer = v("lden_fer") < q.get("fer", 999)
         dest = np.ones(len(area), bool)
-        if q.get("dest") and re.fullmatch(r"[a-z_]+", f"{q['dest']}_{q.get('period', '')}"):
-            layer = v(f"{mode}_dest_{q['dest']}_{q.get('period')}")
+        if q.get("dest_key") and re.fullmatch(r"[a-z0-9_]+", q["dest_key"]):  # <destination>_<période>[_<scénario>]
+            layer = v(f"{mode}_dest_{q['dest_key']}")
             if layer is not None:
                 dest = layer <= q.get("dest_max", 60)
         ok = walk & airok & bp & route & fer & dest

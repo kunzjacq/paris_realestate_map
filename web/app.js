@@ -400,7 +400,15 @@ function combineWalk(c) {
 // temps porte à porte (min, uint8, DEST_NONE hors d'atteinte) pour la destination, la période et le mode choisis ;
 // null sans destination, ou tant que la couche n'est pas chargée (pas de filtre)
 const DEST_NONE = 255;
-const destKey = () => state.dest && index?.destinations?.[state.dest] ? `${state.dest}_${state.period}` : null;
+// scénario du réseau : avec des lignes en projet cochées, le plus récent dont la date précède celle du curseur
+// (réseau prévu, durées estimées) ; sinon réseau actuel
+function destScenario() {
+  if (!(state.gpe || state.tramProjects)) return null;
+  const ok = Object.entries(index?.dest_scenarios || {}).filter(([, d]) => d <= state.gpeDate).sort((a, b) => a[1] < b[1] ? -1 : 1);
+  return ok.length ? ok[ok.length - 1][0] : null;
+}
+const destKey = () => !state.dest || !index?.destinations?.[state.dest] ? null
+  : `${state.dest}_${state.period}` + (destScenario() ? `_${destScenario()}` : "");
 const destName = () => index?.destinations?.[state.dest] || "";
 
 function combineDest(c) {
@@ -444,7 +452,15 @@ function showDest() {
     { weekday: "long", day: "numeric", month: "long", year: "numeric" }) : "";
   $("dest-note").textContent = `${index.periods?.[state.period] || ""} : trajet ${state.travelMode === "bike" ? "à vélo"
     : "à pied"} jusqu'à une gare (mode choisi ci-dessus), puis RER, Transilien, métro, tram ou TER ; durée médiane des `
-    + `départs de la période, horaires IDFM du ${day}. Lignes en projet non comprises.`;
+    + `départs de la période, horaires IDFM du ${day}. ` + destNetworkText();
+}
+
+function destNetworkText() {
+  const sc = destScenario(), dates = index.dest_scenarios || {};
+  if (sc) return `Réseau prévu ${fmtGpeDate(dates[sc])} (lignes en projet cochées ouvertes d'ici là, y compris `
+    + "Grand Paris Express et prolongements de tramway) : durées estimées sur ces lignes.";
+  if (state.gpe || state.tramProjects) return `Réseau actuel : pas de scénario avant ${fmtGpeDate(Object.values(dates).sort()[0] || "")}.`;
+  return "Réseau actuel (cocher des lignes en projet pour le réseau prévu).";
 }
 
 function destChanged() {
@@ -1046,7 +1062,7 @@ function requestStats() {
       codes: [...communes.keys()].filter(isActive), mode: state.travelMode, networks: selectedNetworks(),
       walk: state.walkFilter ? state.walk : null, air: state.air, bp: state.bpNoise,
       route: state.ldenRoute, fer: state.ldenFer,
-      dest: destKey() ? state.dest : null, period: state.period, dest_max: state.destMax,
+      dest_key: destKey(), dest_max: state.destMax,
     };
     try {
       const r = await fetch("api/stats", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1378,7 +1394,8 @@ function renderHover() {
     const st = si < c.meta.stations.length ? c.meta.stations[si] : null;
     const tr = st?.transit?.[destKey()];
     html += `<div class="dest${cellPasses(c, i).dest ? "" : " fail"}">${destName()} : <strong>${m === DEST_NONE ? "plus de 2 h" : `${m} min`}</strong>`
-      + (st && m !== DEST_NONE ? `<br><span class="muted">via ${st.nom}${tr?.[1] ? ` (${transitLine(tr[1])}, ${Math.round(tr[0])} min)` : ""}</span>` : "")
+      + (st && m !== DEST_NONE ? `<br><span class="muted">via ${st.nom}${tr?.[1] ? ` (${transitLine(tr[1])}, ${Math.round(tr[0])} min`
+        + `${tr[2] >= 0.5 ? ", estimation : ligne en projet" : ""})` : ""}</span>` : "")
       + "</div>";
   }
   // niveaux de bruit au point survolé, pastille aux couleurs de la légende
@@ -1533,7 +1550,7 @@ function initControls() {
   gpeBox.addEventListener("change", () => { state.gpe = gpeBox.checked; showGpe(); networksChanged(); });
   tramProj.addEventListener("change", () => { state.tramProjects = tramProj.checked; showGpe(); networksChanged(); });
   gpeRange.addEventListener("input", () => {
-    state.gpeDate = projectDates()[+gpeRange.value]; showGpe();
+    state.gpeDate = projectDates()[+gpeRange.value]; showGpe(); showDest();
     for (const c of loadedCommunes()) { combineWalk(c); ensureNetworkLayers(c); }
     showNearStations(hoverEvt && hoverEvt.latlng);
     scheduleUpdate();
@@ -1629,6 +1646,7 @@ function initGoto() {
 
 // réseaux, tramways ou lignes en projet changés : temps de trajet recombinés (et couches manquantes chargées)
 function networksChanged() {
+  showDest();
   for (const c of loadedCommunes()) { combineWalk(c); ensureNetworkLayers(c); }
   showNearStations(hoverEvt && hoverEvt.latlng);
   update({ context: state.context === "walk" });
