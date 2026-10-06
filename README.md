@@ -1,4 +1,4 @@
-# immo_map
+# paris_realestate_map
 
 Carte interactive des zones situées à moins de N minutes à pied ou à vélo d'une gare RER, Transilien ou d'une
 station de métro, sous des seuils de pollution de l'air et de bruit, pour n'importe quelle commune
