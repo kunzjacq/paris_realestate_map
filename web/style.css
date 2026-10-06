@@ -96,7 +96,7 @@ select { width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--l
 .check { display: block; margin-top: 6px; cursor: pointer; }
 .check input { accent-color: var(--accent); }
 .check-top { margin: 0 0 8px; }
-#walk-controls.off { opacity: .4; pointer-events: none; }
+#walk-controls.off, #air-sliders.off, #noise-controls.off { opacity: .4; pointer-events: none; }
 .seg { display: flex; gap: 0; margin-bottom: 10px; }
 .seg button {
   flex: 1; border: 1px solid var(--line); background: #fff; padding: 6px 10px; font: inherit; cursor: pointer; color: var(--ink);

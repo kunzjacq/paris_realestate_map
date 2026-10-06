@@ -45,7 +45,9 @@ const state = {
   inactive: [],        // codes des communes décochées
   walk: 10,            // seuil (min) du mode courant : copie de limits[travelMode]
   limits: { walk: 10, bike: 10 },  // seuil propre à chaque mode, retrouvé quand on revient au mode
-  walkFilter: true,    // false : le temps de trajet n'est pas un critère
+  walkFilter: true,
+  airFilter: true,     // false : la pollution n'est pas un critère (réglages conservés)
+  noiseFilter: true,   // false : le bruit n'est pas un critère (réglages conservés)    // false : le temps de trajet n'est pas un critère
   travelMode: "walk",  // "walk" ou "bike"
   networks: { rer: true, transilien: true, metro: true },  // réseaux pris en compte pour le temps de trajet
   trams: {},           // lignes de tramway prises en compte (« 3a » : true) ; aucune par défaut
@@ -366,7 +368,11 @@ const loadedCommunes = () => [...communes.values()].filter((c) => c.loaded);
 // lignes en projet atteinte à la date choisie (Grand Paris Express ; prolongements des tramways cochés)
 const gpeKey = (date) => "gpe" + date.replaceAll("-", "");
 const tramKey = (line, date) => `tram${line.toLowerCase()}` + (date ? `_${date.replaceAll("-", "")}` : "");
-const projectDates = () => [...new Set([...(index?.gpe || []), ...Object.values(index?.tram_projects || {}).flat()])].sort();
+// dates d'ouverture proposées par le curseur : jusqu'au dernier scénario du réseau prévu (fin 2031), au-delà
+// duquel aucun temps porte à porte n'est calculé
+const projectHorizon = () => Object.values(index?.dest_scenarios || {}).sort().pop() || "9999-12-31";
+const projectDates = () => [...new Set([...(index?.gpe || []), ...Object.values(index?.tram_projects || {}).flat()])]
+  .filter((d) => d <= projectHorizon()).sort();
 const tramLines = () => (index?.trams || []).filter((l) => state.trams[l]);
 function selectedNetworks() {
   const nets = Object.keys(state.networks).filter((n) => state.networks[n]);
@@ -696,9 +702,11 @@ function initMap() {
 
 function thresholds() {
   // temps en secondes ; sans filtre, même les cellules hors d'atteinte passent
-  const t = { walk: state.walkFilter ? limitSec(state.walk) : UNREACHED, bp: state.bpNoise, route: state.ldenRoute, fer: state.ldenFer,
+  const n = state.noiseFilter;  // case « Filtrer par le bruit » décochée : comme « pas de filtre »
+  const t = { walk: state.walkFilter ? limitSec(state.walk) : UNREACHED, bp: n ? state.bpNoise : 3, route: n ? state.ldenRoute : 999,
+    fer: n ? state.ldenFer : 999,
     dest: destKey() ? state.destMax : DEST_NONE };
-  for (const a of AIR) t[a.key] = (state.air[a.key] ?? Infinity) * 10 + 0.5;  // dixièmes de µg/m³
+  for (const a of AIR) t[a.key] = (state.airFilter ? state.air[a.key] ?? Infinity : Infinity) * 10 + 0.5;  // dixièmes de µg/m³
   return t;
 }
 
@@ -1060,8 +1068,9 @@ function requestStats() {
     statsCtrl = new AbortController();
     const query = {
       codes: [...communes.keys()].filter(isActive), mode: state.travelMode, networks: selectedNetworks(),
-      walk: state.walkFilter ? state.walk : null, air: state.air, bp: state.bpNoise,
-      route: state.ldenRoute, fer: state.ldenFer,
+      walk: state.walkFilter ? state.walk : null, air: state.airFilter ? state.air : {},
+      bp: state.noiseFilter ? state.bpNoise : 3, route: state.noiseFilter ? state.ldenRoute : 999,
+      fer: state.noiseFilter ? state.ldenFer : 999,
       dest_key: destKey(), dest_max: state.destMax,
     };
     try {
@@ -1567,6 +1576,12 @@ function initControls() {
       update({ context: ctx });
     });
   };
+  for (const [id, key, box] of [["air-filter", "airFilter", "air-sliders"], ["noise-filter", "noiseFilter", "noise-controls"]]) {
+    const el = $(id);
+    el.checked = state[key];
+    $(box).classList.toggle("off", !state[key]);
+    el.addEventListener("change", () => { state[key] = el.checked; $(box).classList.toggle("off", !el.checked); update(); });
+  }
   bind("bp-noise", "bpNoise");
   bind("lden-route", "ldenRoute");
   bind("lden-fer", "ldenFer");

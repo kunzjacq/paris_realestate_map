@@ -25,26 +25,6 @@
     </section>
 
     <section>
-      <h2>
-        <button type="button" id="toggle-communes" class="fold" aria-expanded="true" aria-controls="communes">
-          <span class="chevron" aria-hidden="true">▾</span>Communes
-        </button>
-        <span class="hint" id="commune-count"></span>
-      </h2>
-      <ul id="communes" class="communes"></ul>
-      <div id="add-box" hidden>
-        <div class="search">
-          <input type="search" id="search" placeholder="Ajouter une commune d'Île-de-France…" autocomplete="off">
-          <ul id="suggestions" class="suggestions" hidden></ul>
-        </div>
-        <button type="button" id="add-visible" class="btn">Ajouter les communes visibles (≥ 30 % à l’écran)</button>
-        <p class="note">Ou cliquez sur la carte hors des communes chargées. Une nouvelle commune prend 1 à 3 min (téléchargements), puis s'affiche d'elle-même.</p>
-        <div id="jobs" class="jobs" hidden></div>
-      </div>
-      <p class="note" id="static-note" hidden>Mode statique : lancez <code>./run.sh</code> pour pouvoir ajouter des communes.</p>
-    </section>
-
-    <section>
       <h2>Trajet jusqu'à une gare <output id="walk-out"></output></h2>
       <label class="check check-top"><input type="checkbox" id="walk-filter" checked> Filtrer par temps de trajet</label>
       <div id="walk-controls">
@@ -105,11 +85,14 @@
 
     <section>
       <h2>Pollution de l'air <span class="hint" id="air-year"></span></h2>
+      <label class="check check-top"><input type="checkbox" id="air-filter" checked> Filtrer par la pollution</label>
       <div id="air-sliders"></div>
     </section>
 
     <section>
       <h2>Bruit des transports <span class="hint">Lden</span></h2>
+      <label class="check check-top"><input type="checkbox" id="noise-filter" checked> Filtrer par le bruit</label>
+      <div id="noise-controls">
       <label class="field">
         <span>Bruit routier — toutes rues (Bruitparif, CSB E4)</span>
         <select id="lden-route">
@@ -144,6 +127,7 @@
           <option value="1">« Préservé » seulement</option>
         </select>
       </label>
+      </div>
       <p class="note">Repères : l'OMS recommande moins de 53 dB Lden pour le bruit routier et moins de 54 dB pour le ferroviaire ; la valeur limite réglementaire est de 68 dB (route) et 73 dB (fer).</p>
     </section>
 
@@ -167,6 +151,26 @@
       <label class="check"><input type="checkbox" id="show-zone" checked> Zone retenue</label>
       <label class="check"><input type="checkbox" id="show-iso" checked> Contour de l'isochrone</label>
       <label class="check"><input type="checkbox" id="show-quartiers" checked> Quartiers</label>
+    </section>
+
+    <section>
+      <h2>
+        <button type="button" id="toggle-communes" class="fold" aria-expanded="true" aria-controls="communes">
+          <span class="chevron" aria-hidden="true">▾</span>Communes
+        </button>
+        <span class="hint" id="commune-count"></span>
+      </h2>
+      <ul id="communes" class="communes"></ul>
+      <div id="add-box" hidden>
+        <div class="search">
+          <input type="search" id="search" placeholder="Ajouter une commune d'Île-de-France…" autocomplete="off">
+          <ul id="suggestions" class="suggestions" hidden></ul>
+        </div>
+        <button type="button" id="add-visible" class="btn">Ajouter les communes visibles (≥ 30 % à l’écran)</button>
+        <p class="note">Ou cliquez sur la carte hors des communes chargées. Une nouvelle commune prend 1 à 3 min (téléchargements), puis s'affiche d'elle-même.</p>
+        <div id="jobs" class="jobs" hidden></div>
+      </div>
+      <p class="note" id="static-note" hidden>Mode statique : lancez <code>./run.sh</code> pour pouvoir ajouter des communes.</p>
     </section>
 
     <section id="freshness-box" hidden>

@@ -31,12 +31,12 @@ l'autre (navigateur), comme la dernière vue de la carte.
 | Rubrique | Contenu |
 |---|---|
 | Aller à | commune chargée (complétion, « st » vaut « saint »), puis quartier dans la liste déroulante : la carte se centre sur la commune dès qu'elle est choisie, puis sur le quartier |
-| Communes | liste repliable (clic sur le titre) : case pour inclure ou non la commune, centrage, retrait ; recherche, « Ajouter les communes visibles », suivi des constructions. « ⚠ route » / « ⚠ fer » : bruit connu sur moins de 90 % de la commune |
-| Trajet jusqu'à une gare | filtre activable, à pied ou à vélo, réseaux RER / Transilien / Métro, seuil de 3 à 20 min (pas de 1 min), propre à chaque mode : changer de mode reprend le seuil de ce mode. « Tramways » (repliable) : une case par ligne en service (T1 à T14), aucune cochée par défaut, boutons « Toutes » / « Aucune ». « Lignes en projet » : « Grand Paris Express (lignes 15 à 18) » et « Prolongements de tramway » (des lignes cochées), avec un curseur commun sur les dates d'ouverture estimées (fin 2026 à fin 2038) qui ne retient que les arrêts ouverts d'ici la date choisie |
+| Trajet jusqu'à une gare | filtre activable, à pied ou à vélo, réseaux RER / Transilien / Métro, seuil de 3 à 20 min (pas de 1 min), propre à chaque mode : changer de mode reprend le seuil de ce mode. « Tramways » (repliable) : une case par ligne en service (T1 à T14), aucune cochée par défaut, boutons « Toutes » / « Aucune ». « Lignes en projet » : « Grand Paris Express (lignes 15 à 18) » et « Prolongements de tramway » (des lignes cochées), avec un curseur commun sur les dates d'ouverture estimées (fin 2026 à fin 2031, dernier scénario du réseau prévu) qui ne retient que les arrêts ouverts d'ici la date choisie |
 | Trajet jusqu'à une destination | destination (Châtelet-Les Halles, La Défense, Gare de Lyon, Saint-Lazare, Montparnasse, Gare du Nord ; « Aucune » : pas de filtre), période (pointe du matin 7 h 30 – 9 h 30, milieu de journée 11 h – 15 h, en semaine) et durée porte à porte maximale (15 à 90 min) : trajet jusqu'à une gare dans le mode choisi (à pied ou à vélo), puis transports en commun ; avec des lignes en projet cochées, réseau prévu fin 2027 ou fin 2031 (le plus récent avant la date du curseur), durées estimées signalées au survol |
-| Pollution de l'air | un curseur par polluant (NO₂, PM2.5, PM10, moyennes annuelles), repères OMS et UE 2030 |
-| Bruit des transports | Lden routier et ferroviaire maximal (de < 75 à < 45 dB), indice global Bruitparif (3 niveaux) |
+| Pollution de l'air | case « Filtrer par la pollution » (décochée : critère ignoré, réglages conservés) ; un curseur par polluant (NO₂, PM2.5, PM10, moyennes annuelles), repères OMS et UE 2030 |
+| Bruit des transports | case « Filtrer par le bruit » (décochée : critère ignoré, réglages conservés) ; Lden routier et ferroviaire maximal (de < 75 à < 45 dB), indice global Bruitparif (3 niveaux) |
 | Affichage | couche de contexte (temps de trajet, temps jusqu'à la destination, polluants, bruits), zone retenue, contour de la zone atteignable, quartiers |
+| Communes | liste repliable (clic sur le titre) : case pour inclure ou non la commune, centrage, retrait ; recherche, « Ajouter les communes visibles », suivi des constructions. « ⚠ route » / « ⚠ fer » : bruit connu sur moins de 90 % de la commune |
 | Données | âge des données et bouton de mise à jour de celles de plus de 6 mois (voir « Serveur ») |
 | Zone retenue | repliable : surface retenue totale et par commune, part de la surface respectant chaque critère seul |
 
@@ -271,7 +271,8 @@ Toutes les couches sont rééchantillonnées sur une grille Web Mercator d'envir
   mois. Les gares en correspondance avec une gare existante apparaissent deux fois (gare actuelle et gare en
   projet). Les lignes existantes prolongées depuis (14, 11, 4, RER E) sont déjà dans les gares en service
   d'IDFM. Les tronçons sans date chez IDFM (T4 vers Montfermeil, une partie du T1 Ouest) sont ignorés ; le
-  T11 phase 2 (2038) n'est encore qu'à l'étude.
+  T11 phase 2 (2038) n'est encore qu'à l'étude. Le curseur s'arrête au dernier scénario du réseau prévu (fin 2031) :
+  les tronçons ouverts après (T1 vers Colombes en 2032, T11 phase 2) ne sont pas proposés.
 - Tramways : la vitesse du tram n'intervient pas (seul compte le trajet jusqu'à l'arrêt) ; un arrêt de tram
   compte comme une gare.
 - Temps jusqu'à une destination : horaires théoriques d'un seul jour (mardi), sans retards ni travaux ; durée
