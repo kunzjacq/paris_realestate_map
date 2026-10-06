@@ -63,7 +63,10 @@ l'autre (navigateur), comme la dernière vue de la carte.
 - **Noms des communes** téléchargées, dessinés au-dessus des zones à partir du zoom 13. Leur emplacement, comme
   celui des noms de quartiers, est calculé par le pipeline (point le plus éloigné des bords, `polylabel`) :
   calculé dans le navigateur, il bloquait l'affichage ~3,5 s au démarrage.
-- Les contours sont lissés et simplifiés selon le zoom (moins de détail en vue large).
+- Les contours sont lissés et simplifiés selon le zoom (moins de détail en vue large), y compris ceux de la
+  couche de contexte : un polygone lissé par niveau (temps, classes de bruit, indice global ; polluants en 7
+  bandes aux couleurs de la légende), îlots de moins de 3 pixels omis, retracé en zoomant d'au moins deux
+  niveaux.
 
 ## Serveur
 

@@ -18,7 +18,6 @@ const COLORS = {
   lden_fer: { 40: "#4bc700", 45: "#53fd00", 50: "#b7fd72", 55: "#fcfd00", 60: "#fda900", 65: "#fd0000", 70: "#d300fc", 75: "#950064" },
   ramp: ["#fcfdbf", "#fec287", "#fb8861", "#e65164", "#b73779", "#822681", "#51127c"],
 };
-const EMPTY_PNG = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
 const STORAGE_KEY = "immo_map.state.v3";
 const NETWORK_COLORS = { rer: "#c2185b", transilien: "#1565c0", metro: "#e0a100", gpe: "#00897b", tram: "#5e35b1" };
 const NO_STATION = 65535;  // indice de gare d'une cellule sans gare atteignable
@@ -73,7 +72,6 @@ let map, isoLayer, stationsLayer, accesLayer, nearLayer;
 let accesByZdc = new Map();  // zdc -> marqueurs d'accès
 let airRange = {};
 let serverMode = false, lastVersion = null, firstFit = true;
-const canvas = document.createElement("canvas");
 
 const $ = (id) => document.getElementById(id);
 const fmt = (v, d = 1) => v.toLocaleString("fr-FR", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -145,7 +143,7 @@ async function loadCommuneData(c) {
   if (communes.get(c.code) !== c) return;  // commune retirée ou reconstruite entre-temps
   Object.assign(c, {
     L: layers, loaded: true,
-    context: L.imageOverlay(EMPTY_PNG, c.meta.bounds, { opacity: 0.7, interactive: false }).addTo(map),
+    context: L.layerGroup().addTo(map),   // couche de contexte : polygones lissés par niveau (drawContext)
     zone: L.layerGroup().addTo(map),      // zone retenue et voile hors zone, en contours lissés
     iso: L.layerGroup().addTo(isoLayer),  // contour de la zone atteignable
   });
@@ -696,6 +694,10 @@ function initMap() {
   const unloaded = map.createPane("unloaded");  // voile hachuré hors des communes téléchargées
   unloaded.style.zIndex = 405;
   unloaded.style.pointerEvents = "none";
+  const context = map.createPane("context");  // couche de contexte : niveaux opaques, transparence d'ensemble
+  context.style.zIndex = 402;
+  context.style.opacity = 0.7;
+  context.style.pointerEvents = "none";
   map.createPane("zone").style.zIndex = 410;
   const quartiers = map.createPane("quartiers");  // limites des quartiers, entre zone et isochrone
   quartiers.style.zIndex = 415;
@@ -788,33 +790,10 @@ function computeCommune(c, t) {
   return { match, total, ok, crit: { walk: cWalk, air: cAir, bp: cBp, route: cRoute, fer: cFer, dest: cDest } };
 }
 
-// ------------------------------------------------------------------ rendu
-
-function hexToRgb(h) {
-  const v = parseInt(h.slice(1), 16);
-  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
-}
-
-function rampColor(t) {
-  const stops = COLORS.ramp.map(hexToRgb);
-  const x = Math.max(0, Math.min(1, t)) * (stops.length - 1);
-  const k = Math.min(stops.length - 2, Math.floor(x)), f = x - k;
-  return stops[k].map((v, j) => Math.round(v + (stops[k + 1][j] - v) * f));
-}
-
-function paint(c, fill) {
-  const { width: W, height: H } = c.meta;
-  canvas.width = W; canvas.height = H;
-  const ctx = canvas.getContext("2d");
-  const img = ctx.createImageData(W, H);
-  fill(img.data, W, H);
-  ctx.putImageData(img, 0, 0);
-  return canvas.toDataURL();
-}
-
-// ------------------------------------------------------------------ contours lissés
+// ------------------------------------------------------------------ rendu : contours lissés
 
 const zoneRenderer = L.canvas({ padding: 0.3, pane: "zone" });  // panneau créé dans initMap
+const contextRenderer = L.canvas({ padding: 0.3, pane: "context" });
 const isoRenderer = L.canvas({ padding: 0.3, pane: "iso" });
 const ISO_STYLE = { pane: "iso", renderer: isoRenderer, color: "#08519c", weight: 1.5, dashArray: "5 4", fill: false, interactive: false };
 
@@ -828,7 +807,7 @@ function blurMask(mask, W, H, k = 1) {
   const share = 1 / (k * k);
   for (let r = 0; r < H; r++) {
     const row = (Math.floor(r / k) + 1) * W2 + 1;
-    for (let c = 0; c < W; c++) if (mask[r * W + c]) a[row + Math.floor(c / k)] += share;
+    for (let c = 0; c < W; c++) { const v = mask[r * W + c]; if (v) a[row + Math.floor(c / k)] += share * v; }
   }
   for (let pass = 0; pass < 2; pass++) {
     b.fill(0);
@@ -843,8 +822,8 @@ function blurMask(mask, W, H, k = 1) {
   return { f: a, W2, H2 };
 }
 
-// courbes de niveau 0,5 (marching squares), reliées en anneaux fermés ; coordonnées en indices de cellule
-function marchingSquares(f, W2, H2) {
+// courbes de niveau `level` (marching squares), reliées en anneaux fermés ; coordonnées en indices de cellule
+function marchingSquares(f, W2, H2, level = 0.5) {
   const nb = new Int32Array(2 * W2 * H2 * 2).fill(-1);   // deux voisins par arête traversée
   const link = (e1, e2) => {
     nb[2 * e1] < 0 ? nb[2 * e1] = e2 : nb[2 * e1 + 1] = e2;
@@ -854,7 +833,7 @@ function marchingSquares(f, W2, H2) {
   for (let r = 0; r < H2 - 1; r++) {
     for (let c = 0; c < W2 - 1; c++) {
       const tl = f[r * W2 + c], tr = f[r * W2 + c + 1], br = f[(r + 1) * W2 + c + 1], bl = f[(r + 1) * W2 + c];
-      const k = (tl > 0.5 ? 8 : 0) | (tr > 0.5 ? 4 : 0) | (br > 0.5 ? 2 : 0) | (bl > 0.5 ? 1 : 0);
+      const k = (tl > level ? 8 : 0) | (tr > level ? 4 : 0) | (br > level ? 2 : 0) | (bl > level ? 1 : 0);
       if (k === 0 || k === 15) continue;
       const T = Hid(r, c), B = Hid(r + 1, c), Lf = Vid(r, c), R = Vid(r, c + 1);
       switch (k) {
@@ -865,16 +844,16 @@ function marchingSquares(f, W2, H2) {
         case 6: case 9: link(T, B); break;
         case 7: case 8: link(Lf, T); break;
         case 5: case 10: {  // point selle : tranché par la moyenne au centre
-          const centerIn = (tl + tr + br + bl) / 4 > 0.5;
+          const centerIn = (tl + tr + br + bl) / 4 > level;
           if ((k === 5) === centerIn) { link(Lf, T); link(B, R); } else { link(Lf, B); link(T, R); }
         }
       }
     }
   }
-  const point = (e) => {  // position interpolée du passage à 0,5 sur l'arête e
+  const point = (e) => {  // position interpolée du passage au seuil sur l'arête e
     const v = e & 1, cell = e >> 1, r = Math.floor(cell / W2), c = cell % W2;
     const a = f[cell], b = v ? f[cell + W2] : f[cell + 1];
-    const t = (0.5 - a) / (b - a);
+    const t = (level - a) / (b - a);
     return v ? [c, r + t] : [c + t, r];
   };
   const seen = new Uint8Array(2 * W2 * H2), rings = [];
@@ -933,14 +912,41 @@ function simplify(ring, tol) {
 
 // contours lissés d'un masque de cellules, en LatLng, détaillés selon le zoom courant
 function smoothContours(mask, meta) {
-  const { left, top, cell } = meta.merc;
+  const { k, mpp } = contourGrid(meta);
+  const { f, W2, H2 } = blurMask(mask, meta.width, meta.height, k);
+  return levelRings(f, W2, H2, k, mpp, meta, 0.5);
+}
+
+// regroupement des cellules selon le zoom courant : par 2, 4… tant que les blocs font moins de `px` pixels
+// (zone retenue : un demi-pixel ; couche de contexte, plus chargée : un pixel)
+function contourGrid(meta, px = 0.5) {
   const mpp = 156543.03392804097 / Math.pow(2, Math.round(map.getZoom()));  // mètres Mercator par pixel
   let k = 1;
-  while (cell * k * 2 <= mpp) k *= 2;  // cellules regroupées tant qu'elles font moins d'un pixel
-  const { f, W2, H2 } = blurMask(mask, meta.width, meta.height, k);
+  while (meta.merc.cell * k <= mpp * px) k *= 2;
+  return { k, mpp };
+}
+
+// anneaux lissés ([lat, lon]) de la courbe de niveau `level` d'un champ flouté (blurMask). Simplifiés puis
+// lissés (moins de points à lisser) ; minPx : anneaux plus petits que cela à l'écran ignorés (îlots invisibles,
+// très nombreux dans les couches de bruit). Coordonnées Web Mercator converties directement (sans objets Leaflet)
+const EARTH_R = 6378137, RAD2DEG = 180 / Math.PI;
+function levelRings(f, W2, H2, k, mpp, meta, level, minPx = 0, smoothing = 2) {
+  const { left, top, cell } = meta.merc;
   const step = cell * k, tol = (0.35 * mpp) / step;  // ~1/3 de pixel, en cellules regroupées
-  return marchingSquares(f, W2, H2).map((ring) => simplify(chaikin(ring), tol).map(([c, r]) =>
-    L.CRS.EPSG3857.unproject(L.point(left + (c - 1) * step + step / 2, top - (r - 1) * step - step / 2))));
+  const minCells = (minPx * mpp) / step;
+  const out = [];
+  for (const ring of marchingSquares(f, W2, H2, level)) {
+    if (minCells > 0) {
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const [c, r] of ring) { if (c < x0) x0 = c; if (c > x1) x1 = c; if (r < y0) y0 = r; if (r > y1) y1 = r; }
+      if (x1 - x0 < minCells && y1 - y0 < minCells) continue;
+    }
+    out.push(chaikin(simplify(ring, tol), smoothing).map(([c, r]) => {
+      const x = left + (c - 1) * step + step / 2, y = top - (r - 1) * step - step / 2;
+      return [(2 * Math.atan(Math.exp(y / EARTH_R)) - Math.PI / 2) * RAD2DEG, (x / EARTH_R) * RAD2DEG];
+    }));
+  }
+  return out;
 }
 
 // anneaux (LatLng) d'une géométrie GeoJSON Polygon / MultiPolygon
@@ -979,38 +985,62 @@ const walkBin = (sec) => {
   return m > 20 ? 0 : Math.max(5, 5 * Math.ceil(m / 5));
 };
 
-function contextColorFn(key) {
-  if (key in airRange) {
-    const { min, max } = airRange[key];
-    return (v) => v ? rampColor((v / 10 - min) / (max - min)) : null;
+// niveaux de la couche de contexte, du plus faible au plus fort (dessinés dans cet ordre, chacun recouvrant
+// les précédents) : rang par cellule de la commune (0 : rien à peindre) et couleur de chaque rang
+function contextLevels(c, key) {
+  const own = c.L.commune, n = own.length, rank = new Uint8Array(n);
+  let colors, rankOf;
+  if (key in airRange) {  // polluants : bandes régulières de la plage de la commune, couleurs de la légende
+    const { min, max } = airRange[key], v = c.L[key];
+    colors = COLORS.ramp;
+    const K = colors.length;
+    rankOf = (i) => v[i] ? 1 + Math.min(K - 1, Math.max(0, Math.floor(((v[i] / 10 - min) / (max - min || 1)) * K))) : 0;
+  } else {
+    const order = key === "walk" ? [20, 15, 10, 5] : key === "dest" ? [120, 90, 60, 45, 30, 20]
+      : Object.keys(COLORS[key]).map(Number).sort((a, b) => a - b);  // bruit : du plus calme au plus bruyant
+    colors = order.map((b) => COLORS[key][b]);
+    const pos = new Map(order.map((b, i) => [b, i + 1]));
+    const src = key === "walk" ? (i) => walkBin(c.walkSel[i]) : key === "dest" ? (i) => destBin(c.destSel[i])
+      : (i) => c.L[key][i];
+    rankOf = (i) => pos.get(src(i)) || 0;
   }
-  const rgb = Object.fromEntries(Object.entries(COLORS[key]).map(([k, h]) => [k, hexToRgb(h)]));
-  return (v) => rgb[v] || null;
+  for (let i = 0; i < n; i++) if (own[i]) rank[i] = rankOf(i);
+  return { rank, colors };
 }
 
-// couche de contexte, pour une commune ou pour toutes : seules les communes visibles sont peintes (une image
-// par commune, encodée en PNG : coûteux), les autres le seront à leur apparition (drawVisibleContexts)
+// couche de contexte, pour une commune ou pour toutes : un polygone lissé par niveau (mêmes contours lissés
+// que la zone retenue), empilés du plus faible au plus fort ; le flou est fait une fois sur les rangs, puis une
+// courbe par seuil. Seules les communes visibles sont tracées, les autres à leur apparition ; le détail suit le
+// zoom (drawVisibleContexts)
 function drawContext(only = null) {
-  const key = state.context;
+  const key = state.context, z = Math.round(map.getZoom());
   if (!only) renderLegend();
   for (const c of only ? [only] : loadedCommunes()) {
-    if (key === "none") { c.context.setUrl(EMPTY_PNG); c.contextDirty = false; continue; }
+    c.context.clearLayers();
+    if (key === "none") { c.contextDirty = false; continue; }
     if (!isVisible(c)) { c.contextDirty = true; continue; }
     c.contextDirty = false;
-    // couche de destination pas encore arrivée : rien à peindre, elle le sera à son arrivée (ensureNetworkLayers)
-    if (key === "dest" && destKey() && !c.destSel) { c.context.setUrl(EMPTY_PNG); continue; }
-    const colorOf = contextColorFn(key), mask = c.L.commune;
-    const src = key === "walk" ? c.walkSel.map(walkBin) : key === "dest" ? (c.destSel || new Uint8Array(c.L.commune.length).fill(DEST_NONE)).map(destBin) : c.L[key];
-    c.context.setUrl(paint(c, (d, W, H) => {
-      for (let i = 0; i < W * H; i++) {
-        if (!mask[i]) continue;   // chaque grille ne peint que sa commune : pas de double couche aux bords
-        const k = colorOf(src[i]);
-        if (!k) continue;
-        const p = i * 4;
-        d[p] = k[0]; d[p + 1] = k[1]; d[p + 2] = k[2]; d[p + 3] = 255;
-      }
-    }));
+    c.contextZoom = z;
+    // couche de destination pas encore arrivée : rien à tracer, elle le sera à son arrivée (ensureNetworkLayers)
+    if (key === "dest" && (!destKey() || !c.destSel)) continue;
+    const { rank, colors } = contextLevels(c, key);
+    const { k, mpp } = contourGrid(c.meta, 1);  // cellules regroupées dès qu'elles font moins d'un pixel
+    const { f, W2, H2 } = blurMask(rank, c.meta.width, c.meta.height, k);
+    colors.forEach((color, i) => {
+      // rang ≥ i + 1 ; îlots de moins de 3 px ignorés ; un seul passage de lissage (niveaux nombreux et morcelés)
+      const rings = levelRings(f, W2, H2, k, mpp, c.meta, i + 0.5, 3, 1);
+      if (rings.length) c.context.addLayer(L.polygon(rings, { pane: "context", renderer: contextRenderer,
+        interactive: false, stroke: false, fillColor: color, fillOpacity: 1, fillRule: "evenodd" }));
+    });
   }
+}
+
+// communes apparues, ou zoom avant d'au moins deux niveaux depuis leur tracé (contours trop grossiers) ; en
+// dézoomant, le tracé existant reste (trop détaillé, sans que cela se voie), ce qui évite de tout retracer
+function drawVisibleContexts() {
+  if (state.context === "none") return;
+  const z = Math.round(map.getZoom());
+  for (const c of loadedCommunes()) if ((c.contextDirty || z >= c.contextZoom + 2) && isVisible(c)) drawContext(c);
 }
 
 function renderLegend() {
@@ -1076,10 +1106,6 @@ function renderResult(results) {
 function isVisible(c) {
   const [[s, w], [n, e]] = c.meta.bounds;
   return map.getBounds().pad(0.2).intersects(L.latLngBounds([s, w], [n, e]));
-}
-
-function drawVisibleContexts() {
-  for (const c of loadedCommunes()) if (c.contextDirty && isVisible(c)) drawContext(c);
 }
 
 function drawVisibleZones() {
