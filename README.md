@@ -176,7 +176,10 @@ Aucune donnée n'est donc effacée avant que sa nouvelle version soit disponible
 Le navigateur ne charge les données détaillées d'une commune que lorsqu'elle est visible à l'écran (avec une
 marge de 15 %), quatre communes à la fois au plus, les plus proches du centre de la vue d'abord ; un
 chargement qui échoue est réessayé quelques secondes plus tard. Au démarrage, il ne reçoit que le résumé
-(`meta.json`) et le contour de chaque commune, et la carte rouvre sur la dernière vue utilisée. Le bloc « Zone
+(`meta.json`) et le contour de chaque commune, et la carte rouvre sur la dernière vue utilisée. Ces résumés
+sont chargés par lots de 12, des communes visibles les plus proches du centre aux plus lointaines (emprise
+donnée par `index.json`), et les données des communes visibles commencent à se charger dès le premier lot,
+au démarrage comme après des reconstructions. Le bloc « Zone
 retenue » additionne pourtant toutes les communes actives : il est calculé par le serveur, avec les mêmes
 règles que l'application.
 

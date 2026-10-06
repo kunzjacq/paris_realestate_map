@@ -185,6 +185,7 @@ async function ensureNetworkLayers(c) {
 // simultanées font refuser des chargements par le navigateur) ; un échec est réessayé un peu plus tard.
 const LOAD_MARGIN = 0.15;  // marge autour de la vue (fraction) pour anticiper les petits déplacements
 const MAX_PARALLEL_LOADS = 4, RETRY_MS = 3000;
+const META_BATCH = 12;  // résumés de communes chargés à la fois (laisse passer les couches des communes visibles)
 let retryTimer = 0;
 function ensureVisibleLoaded() {
   const view = map.getBounds().pad(LOAD_MARGIN), center = map.getCenter(), now = Date.now();
@@ -529,14 +530,26 @@ async function syncIndex() {
   for (const [code, c] of communes) {
     if (!wanted.has(code)) { removeCommuneLayers(c); communes.delete(code); }
   }
+  // dernière vue utilisée, rétablie avant les chargements : les communes visibles passent d'abord
+  const restored = firstFit && restoreView();
   const toLoad = index.communes.filter((c) => !communes.has(c.code) || communes.get(c.code).built !== c.built);
-  await Promise.all(toLoad.map((c) => loadCommuneMeta(c.code, c.built)));
+  // résumés chargés par lots, des communes visibles les plus proches du centre aux plus lointaines (emprise de
+  // index.json ; sans emprise : en tête) ; après chaque lot, les données des communes visibles déjà connues
+  // commencent à se charger, sans attendre les autres résumés
+  const view = map.getBounds().pad(LOAD_MARGIN), center = map.getCenter();
+  const extent = (c) => c.bounds ? L.latLngBounds(c.bounds) : null;
+  const visible = (c) => !extent(c) || view.intersects(extent(c));
+  const dist = (c) => extent(c) ? center.distanceTo(extent(c).getCenter()) : 0;
+  toLoad.sort((a, b) => (visible(b) - visible(a)) || dist(a) - dist(b));
+  for (let i = 0; i < toLoad.length; i += META_BATCH) {
+    await Promise.all(toLoad.slice(i, i + META_BATCH).map((c) => loadCommuneMeta(c.code, c.built)));
+    ensureVisibleLoaded();
+  }
   await loadGlobalLayers();
   state.inactive = state.inactive.filter((code) => wanted.has(code));
   if (firstFit) {
     firstFit = false;
-    // dernière vue utilisée ; à défaut, toutes les communes
-    if (!restoreView() && communes.size) fitTo([...communes.keys()]);
+    if (!restored && communes.size) fitTo([...communes.keys()]);  // pas de vue enregistrée : toutes les communes
   }
   renderCommuneList();
   buildAirSliders();

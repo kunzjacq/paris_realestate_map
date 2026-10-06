@@ -1496,7 +1496,8 @@ def update_index():
                 print(f"index : {d.name} ignorée ({e})", flush=True)
                 continue
             communes.append({"code": m["code"], "nom": m["nom"], "dep": m["dep"], "built": m["built"],
-                             "format": m.get("format", 1)})
+                             "format": m.get("format", 1),
+                             "bounds": m.get("bounds")})  # emprise : l'application charge d'abord les communes visibles
             stations.append(frames[0])
             acces.append(frames[1])
         communes.sort(key=lambda c: c["nom"])
