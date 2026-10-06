@@ -30,7 +30,7 @@ const NEAR_STATIONS = 3;  // lieux affichés : les plus proches de la souris
 // est souvent placée un peu à l'écart de la gare existante (Issy RER à 236 m de Issy) : seuil plus large
 const SAME_PLACE_M = 150, SAME_PLACE_PROJECT_M = 300;
 const isProject = (l) => /^gpe|_\d{8}/.test(l.feature.properties.networks || "");
-const DATA_FORMAT = 14;  // doit suivre DATA_FORMAT de scripts/pipeline.py
+const DATA_FORMAT = 15;  // doit suivre DATA_FORMAT de scripts/pipeline.py
 const MODE_LABELS = { walk: "À pied", bike: "À vélo" };
 const UNREACHED = 65535;  // temps (s) d'une cellule hors d'atteinte
 // classe Lden (borne basse ; 40 = moins de 45 dB ; 0 = non renseigné) -> libellé

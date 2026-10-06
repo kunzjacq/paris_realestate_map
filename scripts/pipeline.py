@@ -79,8 +79,8 @@ AIR_YEAR = 2025
 # transport : gares et temps jusqu'à la gare la plus proche de chaque réseau ; destinations : temps porte à
 # porte jusqu'aux destinations (recalculé avec transport : ses couches désignent les gares par leur rang) ;
 # air : Airparif ; bruit : Bruitparif et DRIEAT.
-FORMATS = {"grille": 9, "transport": 12, "destinations": 1, "air": 9, "bruit": 9}
-DATA_FORMAT = 14  # format global (meta.json, index.json ; DATA_FORMAT de web/app.js) : à incrémenter avec FORMATS
+FORMATS = {"grille": 9, "transport": 13, "destinations": 1, "air": 9, "bruit": 9}
+DATA_FORMAT = 15  # format global (meta.json, index.json ; DATA_FORMAT de web/app.js) : à incrémenter avec FORMATS
 AIR_POLLUTANTS = ["no2", "pm25", "pm10"]
 # réseaux ferrés pris en compte pour le temps de marche : mode IDFM -> clé utilisée dans les données
 NETWORKS = {"RER": "rer", "TRAIN": "transilien", "METRO": "metro"}
@@ -512,6 +512,37 @@ def tram_key(line, date=None):
     return f"tram{line.lower()}" + (f"_{date.replace('-', '')}" if date else "")
 
 
+def project_name_key(name):
+    """Nom d'arrêt normalisé (sans accents ni ponctuation) : identifiant des gares en projet."""
+    return re.sub(r"[^a-z0-9]", "", name.lower().translate(str.maketrans("àâäéèêëîïôöùûüç", "aaaeeeeiioouuuc")))
+
+
+def project_zdc(mode, line, name):
+    """Identifiant d'une gare en projet, comme une zone de correspondance (« gpe-saintdenispleyel »,
+    « tram1-anatolefrance ») : gares de l'application et durées en transports (transit.py)."""
+    return f"gpe-{project_name_key(name)}" if mode == "métro" else f"{tram_key(line)}-{project_name_key(name)}"
+
+
+def project_stops():
+    """Arrêts en projet (métro 15 à 18, tramway) avec la date de mise en service de leur opération et phase :
+    GeoDataFrame IDFM (projets_arrets_idf) + date, en Lambert 93 ; tracés des projets (projets_lignes_idf)."""
+    arrets = gpd.read_file(cached(RAW / "idfm_projets_arrets.geojson", lambda: http_get(
+        f"{IDFM_API}/projets_arrets_idf/exports/geojson").content))
+    lignes = gpd.read_file(cached(RAW / "idfm_projets_lignes.geojson", lambda: http_get(
+        f"{IDFM_API}/projets_lignes_idf/exports/geojson").content))
+    keep = lambda d: ((d["mode"] == "métro") & d.indice.isin(GPE_LINES)) | (d["mode"] == "tram")
+    arrets, lignes = arrets[keep(arrets)], lignes[keep(lignes)]
+    dated = lignes[lignes.mes_estime.notna()]
+    dates = (pd.DataFrame({"id_operati": dated.id_operati, "phase": dated.phase,
+                           "date": pd.to_datetime(dated.mes_estime, utc=True).dt.strftime("%Y-%m-%d")})
+             .groupby(["id_operati", "phase"], dropna=False).date.min())
+    arrets = arrets.join(dates, on=["id_operati", "phase"])
+    # phase sans tracé daté (ligne 15 Est : tracés sans phase) : date de l'opération
+    arrets["date"] = arrets.date.fillna(arrets.id_operati.map(dates.groupby(level=0).min()))
+    # opération sans date : Versailles Chantiers phase 4 (déjà en phase 3), T4 Montfermeil, T1 Quatre Routes
+    return arrets[arrets.date.notna()].to_crs(2154), lignes.to_crs(2154)
+
+
 def project_stations():
     """Arrêts en projet, avec leur date de mise en service estimée par IDFM (jeux « projets_arrets_idf » et
     « projets_lignes_idf ») : gares des lignes 15 à 18 du Grand Paris Express et arrêts des prolongements de
@@ -520,29 +551,18 @@ def project_stations():
     première. GeoDataFrame (zdc, nom, lignes, networks, date, geometry) en Lambert 93 ; networks : le réseau
     de sa date (gpe_key, ou tram_key de sa ligne), pour que l'application combine les arrêts ouverts à une
     date donnée comme elle combine RER, Transilien et métro."""
-    arrets = gpd.read_file(cached(RAW / "idfm_projets_arrets.geojson", lambda: http_get(
-        f"{IDFM_API}/projets_arrets_idf/exports/geojson").content))
-    lignes = gpd.read_file(cached(RAW / "idfm_projets_lignes.geojson", lambda: http_get(
-        f"{IDFM_API}/projets_lignes_idf/exports/geojson").content))
     cols = ["zdc", "nom", "lignes", "networks", "date", "geometry"]
-    keep = lambda d: ((d["mode"] == "métro") & d.indice.isin(GPE_LINES)) | (d["mode"] == "tram")
-    arrets, lignes = arrets[keep(arrets)], lignes[keep(lignes) & lignes.mes_estime.notna()]
-    dates = (pd.DataFrame({"id_operati": lignes.id_operati, "phase": lignes.phase,
-                           "date": pd.to_datetime(lignes.mes_estime, utc=True).dt.strftime("%Y-%m-%d")})
-             .groupby(["id_operati", "phase"]).date.min())
-    arrets = arrets.join(dates, on=["id_operati", "phase"])
-    # opération sans date : Versailles Chantiers phase 4 (déjà en phase 3), T4 Montfermeil, T1 Quatre Routes
-    arrets = arrets[arrets.date.notna()].to_crs(2154)
+    arrets, _ = project_stops()
     if arrets.empty:
         return gpd.GeoDataFrame(columns=cols, geometry="geometry", crs=2154)
-    norm = lambda n: re.sub(r"[^a-z0-9]", "", n.lower().translate(str.maketrans("àâäéèêëîïôöùûüç", "aaaeeeeiioouuuc")))
+    norm = project_name_key
     rows = []
     gpe = arrets[arrets["mode"] == "métro"]
     for key, grp in gpe.groupby(gpe.nom_arret.map(norm)):
         first = grp.groupby("indice").date.min()  # ouverture de chaque ligne à cette gare
         date = first.min()
         rows.append({
-            "zdc": f"gpe-{key}", "nom": grp.nom_arret.iloc[0],
+            "zdc": project_zdc("métro", None, grp.nom_arret.iloc[0]), "nom": grp.nom_arret.iloc[0],
             "lignes": [f"Métro {l} ({first[l][:4]})" for l in sorted(first.index, key=int)],
             "networks": [gpe_key(date)], "date": date,
             "geometry": unary_union(list(grp.geometry)).centroid,
@@ -551,7 +571,7 @@ def project_stations():
     for (line, key), grp in tram.groupby([tram.indice, tram.nom_arret.map(norm)]):
         date = grp.date.min()
         rows.append({
-            "zdc": f"{tram_key(line)}-{key}", "nom": grp.nom_arret.iloc[0],
+            "zdc": project_zdc("tram", line, grp.nom_arret.iloc[0]), "nom": grp.nom_arret.iloc[0],
             "lignes": [f"Tram T{line} ({date[:4]})"],
             "networks": [tram_key(line, date)], "date": date,
             "geometry": unary_union(list(grp.geometry)).centroid,
