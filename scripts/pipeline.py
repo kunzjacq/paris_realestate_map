@@ -971,10 +971,10 @@ def bruitparif_gpkg(log):
 
 
 def bruitparif_layers(grid, log):
-    """Code air-bruit = 10 × classe bruit + classe air."""
+    """Code air-bruit = 10 × classe bruit + classe air (une seule rasterisation du code, puis découpage)."""
     g = pyogrio.read_dataframe(bruitparif_gpkg(log), bbox=grid.bounds_l93).to_crs(3857)
-    code = g["code"].astype(int)
-    return grid.burn(zip(g.geometry, code // 10)), grid.burn(zip(g.geometry, code % 10))
+    code = grid.burn(zip(g.geometry, g["code"].astype(int)))
+    return code // 10, code % 10
 
 
 def drieat_index():
@@ -1102,10 +1102,15 @@ def bruitparif_lden(grid, code, source, log):
             raise RuntimeError(f"Bruitparif ne renvoie pas d'image : {r.content[:200]!r}")
         log(f"bruit {source} Bruitparif : dalle {n + 1}/{len(tiles)}")
         rgba = decode_png(cached(cache / f"{tx}_{ty}_{w}x{h}.png", fetch).read_bytes())
-        dist = np.sqrt(((rgba[..., None, :3].astype("float32") - palette) ** 2).sum(-1))
-        k = dist.argmin(-1)
-        ok = (rgba[..., 3] > 100) & (dist.min(-1) <= MAX_COLOR_DIST)
-        classes[ty:ty + h, tx:tx + w] = np.where(ok, levels[k], 255)
+        # chaque couleur distincte (quelques centaines par image) classée une fois, puis appliquée aux pixels
+        key = ((rgba[..., 0].astype("uint32") << 24) | (rgba[..., 1].astype("uint32") << 16)
+               | (rgba[..., 2].astype("uint32") << 8) | rgba[..., 3])
+        colors, inverse = np.unique(key.ravel(), return_inverse=True)
+        rgb = np.stack([(colors >> 24) & 255, (colors >> 16) & 255, (colors >> 8) & 255], -1).astype("float32")
+        dist = np.sqrt(((rgb[:, None, :] - palette) ** 2).sum(-1))
+        ok = ((colors & 255) > 100) & (dist.min(-1) <= MAX_COLOR_DIST)
+        color_class = np.where(ok, levels[dist.argmin(-1)], 255).astype("uint8")
+        classes[ty:ty + h, tx:tx + w] = color_class[inverse].reshape(h, w)
 
     # classe majoritaire par cellule, puis comblement des petits trous (pixels mélangés, bâtiments)
     out = np.full(grid.shape, 255, "uint8")
@@ -1328,11 +1333,6 @@ def build_commune(code, log=print, groups=None, index=True):
     return meta
 
 
-# --------------------------------------------------------------------------- index et couches globales
-
-_index_lock = threading.Lock()
-
-
 # --------------------------------------------------------------------------- reconstructions en parallèle
 
 def _init_worker(jobs, log_queue, download_sem):
@@ -1401,6 +1401,11 @@ def build_many(items, jobs=PARALLEL_BUILDS, log=print, on_done=None, executor=No
             pump.join()
     update_index()
     return errors
+
+
+# --------------------------------------------------------------------------- index et couches globales
+
+_index_lock = threading.Lock()
 
 
 def transit_tables(log=print):
@@ -1860,10 +1865,11 @@ def write_gz(path):
 
 
 def compress_dir(d):
-    """Version compressée de chaque fichier qui n'en a pas (couches reprises : leur .gz l'est aussi)."""
-    for f in d.iterdir():
-        if f.suffix in COMPRESSED_SUFFIXES and not f.with_name(f.name + ".gz").exists():
-            write_gz(f)
+    """Version compressée de chaque fichier qui n'en a pas (couches reprises : leur .gz l'est aussi), sur
+    plusieurs fils (zlib libère le verrou de Python)."""
+    files = [f for f in d.iterdir() if f.suffix in COMPRESSED_SUFFIXES and not f.with_name(f.name + ".gz").exists()]
+    with ThreadPoolExecutor(KD_WORKERS) as pool:
+        list(pool.map(write_gz, files))
 
 
 def compress_missing():
