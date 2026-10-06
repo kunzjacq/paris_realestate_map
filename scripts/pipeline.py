@@ -1,4 +1,4 @@
-"""Préparation des données de l'application immo_map, commune par commune.
+"""Préparation des données de l'application idf_livability_map, commune par commune.
 
 Chaque commune a sa propre grille (Web Mercator, ~10 m) écrite dans
 web/data/communes/<code>/ :
@@ -53,7 +53,7 @@ GLOBAL_DIR = WEB_DATA / "global"
 for d in (RAW, COMMUNES_DIR, GLOBAL_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-HEADERS = {"User-Agent": "immo_map/1.0 (usage personnel)"}
+HEADERS = {"User-Agent": "idf_livability_map/1.0 (usage personnel)"}
 
 IDF_DEPTS = ["75", "77", "78", "91", "92", "93", "94", "95"]
 DURATIONS_MIN = list(range(3, 21))  # plage du curseur de temps de trajet (min)

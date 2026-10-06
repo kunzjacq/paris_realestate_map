@@ -340,7 +340,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 def main():
     global JOBS
-    parser = argparse.ArgumentParser(description="Serveur local de l'application immo_map.")
+    parser = argparse.ArgumentParser(description="Serveur local de l'application idf_livability_map.")
     parser.add_argument("port", nargs="?", type=int, default=8000)
     parser.add_argument("--jobs", type=int, default=pipeline.PARALLEL_BUILDS,
                         help=f"communes construites en parallèle (défaut : {pipeline.PARALLEL_BUILDS})")
@@ -376,7 +376,7 @@ def main():
         JOBS.add(outdated)
     handler = partial(Handler, directory=str(pipeline.ROOT / "web"))
     srv = ThreadingHTTPServer(("127.0.0.1", port), handler)
-    print(f"immo_map : http://localhost:{port}/ ({JOBS.jobs} constructions en parallèle)", flush=True)
+    print(f"idf_livability_map : http://localhost:{port}/ ({JOBS.jobs} constructions en parallèle)", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

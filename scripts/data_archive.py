@@ -19,7 +19,7 @@ save        crée une archive avec web/data/ (communes construites, suffisant po
             les cœurs si elle est installée (sinon le module lzma, sur un seul cœur : ~7 min pour
             170 communes). Restauration plus lente qu'en gzip (~45 s contre ~20 s). Implicite si le nom
             finit par .xz.
-            Nom par défaut : immo_map-data-AAAAMMJJ.tar.gz (.tar.xz avec --xz) à la racine du projet.
+            Nom par défaut : idf_livability_map-data-AAAAMMJJ.tar.gz (.tar.xz avec --xz) à la racine du projet.
 restore     extrait l'archive à la racine du projet (dans un dépôt fraîchement cloné par exemple) ;
             compression (gzip, xz, bzip2 ou aucune) reconnue d'après le contenu, quel que soit le nom.
 """
@@ -53,7 +53,7 @@ def save(args):
     with_cache = "--no-cache" not in args
     names = [a for a in args if not a.startswith("--")]
     xz = "--xz" in args or (bool(names) and names[0].endswith((".xz", ".txz")))
-    out = Path(names[0]) if names else ROOT / f"immo_map-data-{time.strftime('%Y%m%d')}.tar.{'xz' if xz else 'gz'}"
+    out = Path(names[0]) if names else ROOT / f"idf_livability_map-data-{time.strftime('%Y%m%d')}.tar.{'xz' if xz else 'gz'}"
     roots = ["web/data"] + (["data/raw"] if with_cache else [])
     files = [p for r in roots for p in sorted((ROOT / r).rglob("*"))
              if p.is_file() and keep(p.relative_to(ROOT).as_posix())]

@@ -18,7 +18,18 @@ const COLORS = {
   lden_fer: { 40: "#4bc700", 45: "#53fd00", 50: "#b7fd72", 55: "#fcfd00", 60: "#fda900", 65: "#fd0000", 70: "#d300fc", 75: "#950064" },
   ramp: ["#fcfdbf", "#fec287", "#fb8861", "#e65164", "#b73779", "#822681", "#51127c"],
 };
-const STORAGE_KEY = "immo_map.state.v3";
+// clés du stockage du navigateur : préfixe idf_livability_map. (anciennement immo_map. : reprises une fois)
+const STORAGE_PREFIX = "idf_livability_map.", OLD_STORAGE_PREFIX = "immo_map.";
+(function migrateStorage() {
+  try {
+    for (const key of Object.keys(localStorage).filter((k) => k.startsWith(OLD_STORAGE_PREFIX))) {
+      const fresh = STORAGE_PREFIX + key.slice(OLD_STORAGE_PREFIX.length);
+      if (localStorage.getItem(fresh) === null) localStorage.setItem(fresh, localStorage.getItem(key));
+      localStorage.removeItem(key);
+    }
+  } catch (e) { /* stockage indisponible */ }
+})();
+const STORAGE_KEY = STORAGE_PREFIX + "state.v3";
 const NETWORK_COLORS = { rer: "#c2185b", transilien: "#1565c0", metro: "#e0a100", gpe: "#00897b", tram: "#5e35b1" };
 const NO_STATION = 65535;  // indice de gare d'une cellule sans gare atteignable
 // couleur d'une gare : RER, sinon Transilien, sinon métro, sinon Grand Paris Express (réseaux « gpeAAAAMMJJ »),
@@ -582,7 +593,7 @@ async function syncIndex() {
   ensureVisibleLoaded();
 }
 
-const VIEW_KEY = "immo_map.view";
+const VIEW_KEY = STORAGE_PREFIX + "view";
 function saveView() {
   const c = map.getCenter();
   try { localStorage.setItem(VIEW_KEY, JSON.stringify({ lat: c.lat, lng: c.lng, zoom: map.getZoom() })); } catch (e) { /* idem */ }
@@ -1213,7 +1224,7 @@ function makeFoldable(toggleId, body, storageKey, what, foldedByDefault = false)
 
 function initCommuneList() {
   const ul = $("communes");
-  makeFoldable("toggle-communes", ul, "immo_map.communesFolded", "la liste des communes");
+  makeFoldable("toggle-communes", ul, STORAGE_PREFIX + "communesFolded", "la liste des communes");
   ul.addEventListener("change", (e) => {
     const code = e.target.dataset.code; if (!code) return;
     state.inactive = e.target.checked ? state.inactive.filter((c) => c !== code) : [...state.inactive, code];
@@ -1691,7 +1702,7 @@ function initControls() {
   quartiersBtn.title = state.showQuartiers ? "Masquer les quartiers" : "Afficher les quartiers";
   initGoto();
   initDest();
-  makeFoldable("toggle-result", $("result"), "immo_map.resultFolded", "la zone retenue");
+  makeFoldable("toggle-result", $("result"), STORAGE_PREFIX + "resultFolded", "la zone retenue");
   initCommuneList();
 }
 
@@ -1784,7 +1795,7 @@ function showTramCount() {
 }
 
 function initTrams() {
-  makeFoldable("toggle-trams", $("tram-list"), "immo_map.tramsFolded", "les lignes de tramway", true);
+  makeFoldable("toggle-trams", $("tram-list"), STORAGE_PREFIX + "tramsFolded", "les lignes de tramway", true);
   $("tram-lines").addEventListener("change", (e) => {
     const l = e.target.dataset.line; if (!l) return;
     state.trams[l] = e.target.checked; showTramCount(); networksChanged();
@@ -1830,7 +1841,7 @@ function showGpe() {
 
 // ------------------------------------------------------------------ menu : largeur et masquage
 
-const PANEL_KEY = "immo_map.panel";
+const PANEL_KEY = STORAGE_PREFIX + "panel";
 const PANEL_DEFAULT = 360, PANEL_MIN = 260, PANEL_MAX = 720;
 
 function initPanel() {

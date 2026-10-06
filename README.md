@@ -332,10 +332,10 @@ python3 scripts/data_archive.py save                     # web/data + data/raw (
 python3 scripts/data_archive.py save --xz                # idem en xz (~445 Mo, ~30 s avec la commande xz)
 python3 scripts/data_archive.py save --no-cache          # web/data seulement (suffit pour l'appli)
 python3 scripts/data_archive.py save mes-donnees.tar.xz  # nom d'archive choisi (.xz : compression xz)
-python3 scripts/data_archive.py restore immo_map-data-AAAAMMJJ.tar.xz
+python3 scripts/data_archive.py restore idf_livability_map-data-AAAAMMJJ.tar.xz
 ```
 
-**`save`** crée par défaut `immo_map-data-AAAAMMJJ.tar.gz` à la racine du projet (ignoré par git). Avec `--xz`
+**`save`** crée par défaut `idf_livability_map-data-AAAAMMJJ.tar.gz` à la racine du projet (ignoré par git). Avec `--xz`
 (ou un nom finissant par `.xz`), l'archive est compressée en xz : ~25 % plus petite, créée en une trentaine de
 secondes si la commande `xz` est installée (tous les cœurs), sinon en ~7 min par le module `lzma` de Python
 (un seul cœur). Sont omis les fichiers recalculables : les versions compressées `.gz` et les paquets
@@ -353,8 +353,8 @@ antérieur (seulement les groupes de couches périmés).
 Pour repartir d'un clone du dépôt :
 
 ```sh
-git clone git@github.com:kunzjacq/paris_realestate_map.git immo_map && cd immo_map
-python3 scripts/data_archive.py restore /chemin/immo_map-data-AAAAMMJJ.tar.gz
+git clone git@github.com:kunzjacq/paris_realestate_map.git idf_livability_map && cd idf_livability_map
+python3 scripts/data_archive.py restore /chemin/idf_livability_map-data-AAAAMMJJ.tar.gz
 ./run.sh                                   # crée l'environnement Python au premier lancement
 ```
 

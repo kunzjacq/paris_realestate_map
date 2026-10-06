@@ -9,6 +9,9 @@ __pycache__/
 /web/data/
 
 # archives de données
+idf_livability_map-data-*.tar.gz
+idf_livability_map-data-*.tar.xz
+# anciens noms
 immo_map-data-*.tar.gz
 immo_map-data-*.tar.xz
 immo_map-donnees-*.tar.gz
