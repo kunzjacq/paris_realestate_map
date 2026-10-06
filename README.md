@@ -92,7 +92,9 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
 - `web/data/` : les données. Les couches de base de chaque commune (RER, Transilien, métro, air, bruit) sont
   aussi regroupées dans un seul fichier (`layers.pack`, une requête par commune au lieu d'une vingtaine). Les
   couches des tramways, des lignes en projet (72 pour Paris) et des destinations (48 par commune) restent à
-  part (`<couche>.bin`) : l'application ne charge que celles des réseaux cochés et de la destination choisie. Chaque fichier existe aussi en version
+  part (`<couche>.bin`) : l'application ne charge que celles des réseaux cochés et de la destination choisie, pour les communes
+  visibles (les autres à leur apparition) ; chaque commune est recalculée et redessinée à l'arrivée de ses
+  couches, le reste de l'affichage une fois pour toutes. Chaque fichier existe aussi en version
   compressée (`.gz`, ~5 fois plus petite), envoyée avec `Content-Encoding: gzip` aux navigateurs qui
   l'acceptent. Le serveur crée au démarrage les paquets et versions compressées manquants.
 - `/tiles/<plan|ortho>/<z>/<x>/<y>` : tuiles IGN du fond de carte (Plan IGN, photo aérienne), gardées

@@ -176,9 +176,30 @@ async function ensureNetworkLayers(c) {
     names.forEach((name) => c.fetching.delete(name));
   }
   if (communes.get(c.code) !== c) return;
+  // cette commune seulement ; le reste (zones visibles, isochrone, surfaces) une fois pour toutes les communes
+  // dont les couches arrivent ensemble (une mise à jour complète par commune figeait le navigateur)
   combineWalk(c);
-  update({ context: state.context === "walk" || state.context === "dest" });
+  c.lastResult = computeCommune(c, thresholds());
+  c.zoneDirty = true;
+  if (state.context === "walk" || state.context === "dest") drawContext(c);
+  scheduleRefresh();
 }
+
+// rafraîchissement d'ensemble différé et regroupé (zones visibles, isochrone, surfaces de la zone retenue)
+let refreshTimer = 0;
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => {
+    drawVisibleZones();
+    drawIso();
+    if (serverMode) requestStats();
+    else renderResult(new Map(loadedCommunes().map((c) => [c.code, c.lastResult])));
+  }, 150);
+}
+
+// couches des réseaux et destinations choisis : pour les communes visibles seulement, les autres quand elles
+// apparaissent (moveend) ; les surfaces de la zone retenue sont calculées par le serveur
+const visibleLoaded = () => loadedCommunes().filter(isVisible);
 
 // charge les communes visibles (avec une marge) pas encore chargées, puis les dessine.
 // Au plus MAX_PARALLEL_LOADS à la fois, les plus proches du centre de la vue d'abord (trop de requêtes
@@ -473,7 +494,8 @@ function destNetworkText() {
 
 function destChanged() {
   showDest();
-  for (const c of loadedCommunes()) { combineDest(c); ensureNetworkLayers(c); }
+  for (const c of loadedCommunes()) combineDest(c);
+  for (const c of visibleLoaded()) ensureNetworkLayers(c);
   update({ context: state.context === "dest" });
 }
 
@@ -701,7 +723,10 @@ function initMap() {
   nearLayer = L.layerGroup().addTo(map);
 
   map.on("click", onMapClick);
-  map.on("moveend", () => { ensureVisibleLoaded(); drawVisibleZones(); drawIso(); saveView(); });
+  map.on("moveend", () => {
+    ensureVisibleLoaded(); drawVisibleZones(); drawVisibleContexts(); drawIso(); saveView();
+    for (const c of visibleLoaded()) ensureNetworkLayers(c);
+  });
   const labelsByZoom = () => {
     map.getContainer().classList.toggle("labels-off", map.getZoom() < LABEL_MIN_ZOOM);
     map.getContainer().classList.toggle("quartier-labels-off", map.getZoom() < QUARTIER_LABEL_MIN_ZOOM);
@@ -963,11 +988,17 @@ function contextColorFn(key) {
   return (v) => rgb[v] || null;
 }
 
+// couche de contexte, pour une commune ou pour toutes : seules les communes visibles sont peintes (une image
+// par commune, encodée en PNG : coûteux), les autres le seront à leur apparition (drawVisibleContexts)
 function drawContext(only = null) {
   const key = state.context;
   if (!only) renderLegend();
   for (const c of only ? [only] : loadedCommunes()) {
-    if (key === "none") { c.context.setUrl(EMPTY_PNG); continue; }
+    if (key === "none") { c.context.setUrl(EMPTY_PNG); c.contextDirty = false; continue; }
+    if (!isVisible(c)) { c.contextDirty = true; continue; }
+    c.contextDirty = false;
+    // couche de destination pas encore arrivée : rien à peindre, elle le sera à son arrivée (ensureNetworkLayers)
+    if (key === "dest" && destKey() && !c.destSel) { c.context.setUrl(EMPTY_PNG); continue; }
     const colorOf = contextColorFn(key), mask = c.L.commune;
     const src = key === "walk" ? c.walkSel.map(walkBin) : key === "dest" ? (c.destSel || new Uint8Array(c.L.commune.length).fill(DEST_NONE)).map(destBin) : c.L[key];
     c.context.setUrl(paint(c, (d, W, H) => {
@@ -1045,6 +1076,10 @@ function renderResult(results) {
 function isVisible(c) {
   const [[s, w], [n, e]] = c.meta.bounds;
   return map.getBounds().pad(0.2).intersects(L.latLngBounds([s, w], [n, e]));
+}
+
+function drawVisibleContexts() {
+  for (const c of loadedCommunes()) if (c.contextDirty && isVisible(c)) drawContext(c);
 }
 
 function drawVisibleZones() {
@@ -1574,7 +1609,8 @@ function initControls() {
   tramProj.addEventListener("change", () => { state.tramProjects = tramProj.checked; showGpe(); networksChanged(); });
   gpeRange.addEventListener("input", () => {
     state.gpeDate = projectDates()[+gpeRange.value]; showGpe(); showDest();
-    for (const c of loadedCommunes()) { combineWalk(c); ensureNetworkLayers(c); }
+    for (const c of loadedCommunes()) combineWalk(c);
+    for (const c of visibleLoaded()) ensureNetworkLayers(c);
     showNearStations(hoverEvt && hoverEvt.latlng);
     scheduleUpdate();
   });
@@ -1676,9 +1712,10 @@ function initGoto() {
 // réseaux, tramways ou lignes en projet changés : temps de trajet recombinés (et couches manquantes chargées)
 function networksChanged() {
   showDest();
-  for (const c of loadedCommunes()) { combineWalk(c); ensureNetworkLayers(c); }
+  for (const c of loadedCommunes()) combineWalk(c);
+  for (const c of visibleLoaded()) ensureNetworkLayers(c);
   showNearStations(hoverEvt && hoverEvt.latlng);
-  update({ context: state.context === "walk" });
+  update({ context: state.context === "walk" || state.context === "dest" });
 }
 
 // ------------------------------------------------------------------ tramways
