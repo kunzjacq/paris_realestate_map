@@ -1112,7 +1112,8 @@ function drawContext(only = null) {
 // prix médian au m² des ventes DVF (pipeline : write_prix), par quartier ou, sans quartiers, pour la commune
 const PRIX_TYPES = { prix_appartement: "appartement", prix_maison: "maison" };
 const PRIX_LABELS = { appartement: "Appartements", maison: "Maisons" };
-const fmtPrix = (v) => `${Math.round(v).toLocaleString("fr-FR")} €/m²`;
+const fmtNum = (v) => Math.round(v).toLocaleString("fr-FR");
+const fmtPrix = (v) => `${fmtNum(v)} €/m²`;
 
 // couleur d'un prix : interpolée (RVB) entre les deux prix voisins de COLORS.prix, bornée aux extrêmes
 const PRIX_STOPS = Object.entries(COLORS.prix).map(([v, hex]) => [+v, [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16))]);
@@ -1156,9 +1157,10 @@ function isDark(hex) {
 }
 
 // lignes de l'encadré de survol : médiane de chaque type de logement dans le quartier, à défaut (moins de
-// min_sales ventes, commune sans quartiers) dans la commune, comme le filtre, signalée « commune ». Lignes
-// courtes (l'encadré ne s'élargit pas : une valeur trop longue repoussait les autres hors du cadre) ;
-// quartiles et ventes du quartier en infobulle
+// min_sales ventes, commune sans quartiers) dans la commune, comme le filtre, signalée « commune » ; dessous,
+// l'intervalle contenant les 80 % centraux des ventes (10e-90e centiles : dispersion des prix). Lignes courtes (l'encadré ne
+// s'élargit pas : une valeur trop longue repoussait les autres hors du cadre) ; quartiles et ventes du
+// quartier en infobulle
 function prixHtml(c, quartier) {
   if (!c.prix) return "";
   const { years } = c.prix, q = quartier && c.prix.quartiers[quartier.nom];
@@ -1170,7 +1172,9 @@ function prixHtml(c, quartier) {
       + (fallback && q ? ` dans la commune ; quartier : ${ventes(own?.n)}, trop peu)` : ")");
     const fail = state.prixFilter && t === state.prixType && v.med > state.prixMax ? ' class="fail"' : "";
     return `<tr${fail} title="${tip}"><td><i class="sw" style="background:${prixColor(v.med)}"></i>${label}</td>`
-      + `<td>${fmtPrix(v.med)} <span class="muted">${fallback && q ? "commune" : ventes(v.n)}</span></td></tr>`;
+      + `<td>${fmtPrix(v.med)} <span class="muted">${fallback && q ? "commune" : ventes(v.n)}</span>`
+      + (v.p10 ? `<br><span class="muted">80 % entre ${fmtNum(v.p10)} et ${fmtNum(v.p90)}</span>` : "")
+      + "</td></tr>";
   }).join("");
   return `<div class="prix">Prix médian au m², ventes ${years[0]}–${years[1]} :</div><table class="noise">${rows}</table>`;
 }

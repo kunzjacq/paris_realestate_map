@@ -517,7 +517,7 @@ DVF_YEARS = 3                    # millésimes pris en compte, les plus récents
 DVF_FILTER = 1                   # à incrémenter quand le filtrage des ventes change (cache ventes_*.csv.gz)
 DVF_TYPES = {"Appartement": "appartement", "Maison": "maison"}
 PRIX_LAYERS = [f"prix_{t}" for t in DVF_TYPES.values()]  # prix médian par cellule (€/m², uint16, 0 : inconnu)
-PRIX_FORMAT = 2                  # à incrémenter quand le calcul de prix.json change : refait au démarrage du serveur
+PRIX_FORMAT = 4                  # à incrémenter quand le calcul de prix.json change : refait au démarrage du serveur
 PRIX_MIN_SALES = 10              # en deçà, pas de prix médian (trop peu de ventes)
 PRIX_PM2_RANGE = (1000, 40000)   # prix au m² plausibles en Île-de-France ; au-delà, vente écartée
 PRIX_MIN_SURFACE_M2 = 9          # surface bâtie minimale (surfaces nulles ou erronées)
@@ -589,14 +589,15 @@ def dvf_sales(log=print):
 
 
 def prix_stats(s):
-    """Par type de logement : nombre de ventes et, s'il y en a assez, médiane et quartiles du prix au m²."""
+    """Par type de logement : nombre de ventes et, s'il y en a assez, médiane, quartiles et 10e et 90e
+    centiles du prix au m² (intervalle contenant les 80 % centraux des ventes : dispersion des prix)."""
     out = {}
     for t in DVF_TYPES.values():
         v = s["pm2"][s["type"] == t]  # s["type"] : sur un GeoDataFrame, s.type est le type de géométrie
         out[t] = {"n": int(len(v))}
         if len(v) >= PRIX_MIN_SALES:
-            q1, med, q3 = (int(round(x, -1)) for x in v.quantile([0.25, 0.5, 0.75]))
-            out[t].update(med=med, q1=q1, q3=q3)
+            p10, q1, med, q3, p90 = (int(round(x, -1)) for x in v.quantile([0.1, 0.25, 0.5, 0.75, 0.9]))
+            out[t].update(med=med, q1=q1, q3=q3, p10=p10, p90=p90)
     return out
 
 
