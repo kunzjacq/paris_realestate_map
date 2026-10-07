@@ -14,14 +14,7 @@ d'Île-de-France.
 `run.sh` choisit un environnement Python (Python 3.12 ou plus récent), installe les dépendances manquantes
 puis démarre le serveur (voir « Serveur » ci-dessous). Il fonctionne sous Linux et macOS.
 
-**macOS** : le `python3` fourni avec les outils Xcode est trop ancien (3.9). Installer un Python récent
-(`brew install python@3.12`, ou l'installeur de python.org) : `run.sh` prend le premier Python ≥ 3.12 trouvé
-(`python3`, `python3.14`, `python3.13`, `python3.12`) et crée `.venv-local` avec lui. Les dépendances
-(GDAL compris, via rasterio et pyogrio) s'installent en paquets précompilés, sans compilation. `run.sh`
-relève aussi la limite de fichiers ouverts à 4 096 (256 par défaut sous macOS, trop pour les constructions
-en parallèle). Les données d'une autre machine se reprennent avec `scripts/data_archive.py` (voir « Dépôt
-git et données ») ; sans la commande `xz` (`brew install xz`), les archives `.tar.xz` passent par le module
-`lzma` de Python, plus lent.
+Sous macOS, voir d'abord « Installation sous macOS » ci-dessous.
 
 Pour ajouter une commune depuis l'application :
 - la rechercher par nom ;
@@ -30,6 +23,39 @@ Pour ajouter une commune depuis l'application :
 
 Une nouvelle commune prend de quelques secondes (données déjà en cache) à quelques minutes (dalles OSM et
 cartes à télécharger), puis s'affiche d'elle-même.
+
+### Installation sous macOS
+
+Il faut git et Python 3.12 ou plus récent ; le `python3` fourni par Apple (outils Xcode) est en 3.9, trop
+ancien. Le plus simple est de passer par [Homebrew](https://brew.sh), qui installe au passage les outils en
+ligne de commande d'Apple :
+
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+# exécuter les deux lignes affichées à la fin de l'installation (ajout de brew au PATH), puis :
+brew install git python@3.12 xz
+python3 --version    # 3.12 ou plus récent
+```
+
+Sans Homebrew : `xcode-select --install` donne git (outils en ligne de commande d'Apple), et l'installeur
+de [python.org](https://www.python.org/downloads/macos/) un Python récent. `xz` est facultatif : sans lui,
+les archives `.tar.xz` passent par le module `lzma` de Python, plus lent.
+
+Puis cloner le dépôt, reprendre les données d'une autre machine (archive faite par
+`scripts/data_archive.py save`, voir « Dépôt git et données ») et lancer :
+
+```sh
+git clone git@github.com:kunzjacq/paris_realestate_map.git   # ou https://github.com/kunzjacq/paris_realestate_map.git
+cd paris_realestate_map
+python3 scripts/data_archive.py restore /chemin/idf_livability_map-data-AAAAMMJJ.tar.xz
+./run.sh
+```
+
+`run.sh` prend le premier Python ≥ 3.12 trouvé (`python3`, `python3.14`, `python3.13`, `python3.12`) et
+crée `.venv-local` avec lui ; les dépendances (GDAL compris, via rasterio et pyogrio) s'installent en
+paquets précompilés, sans compilation. Il relève aussi la limite de fichiers ouverts à 4 096 (256 par
+défaut sous macOS, trop pour les constructions en parallèle). Au premier démarrage, le serveur recrée les
+fichiers omis de l'archive (versions compressées, paquets de couches).
 
 ## Utilisation de l'application
 
