@@ -12,7 +12,8 @@ save        crée une archive tar, non compressée, avec :
                 couches y sont déjà compressées (<couche>.bin.gz, seule version gardée), sans
                 décompression ni recompression ;
               - data/raw/ (téléchargements : utile pour ajouter ou reconstruire des communes sans tout
-                retélécharger), tel quel par défaut (voir --raw).
+                retélécharger), tel quel par défaut : ses gros fichiers sont déjà compressés (zip, PNG,
+                dalles OSM .json.gz, GeoTIFF compressés) ; une compression ne gagne plus que ~20 %.
             Sont omis les fichiers recalculables :
               - web/data/**/*.json.gz, *.geojson.gz : versions compressées des petits fichiers, recréées au
                 démarrage du serveur ;
@@ -23,7 +24,7 @@ save        crée une archive tar, non compressée, avec :
               - data/raw/dvf/ventes_*.csv.gz : ventes filtrées, tirées des fichiers DVF.
             --no-cache : web/data/ seulement (archive bien plus petite).
             --raw=xz : data/raw placé dans l'archive sous forme d'une archive interne compressée en xz,
-            data/raw.tar.xz (bien plus petite ; commande xz sur tous les cœurs si elle est installée,
+            data/raw.tar.xz (~20 % plus petite ; commande xz sur tous les cœurs si elle est installée,
             sinon module lzma, sur un seul cœur, bien plus lent) ; --raw=gz : idem en gzip
             (data/raw.tar.gz) ; --raw=none (défaut) : fichiers de data/raw tels quels.
             Nom par défaut : idf_livability_map-data-AAAAMMJJ.tar à la racine du projet.

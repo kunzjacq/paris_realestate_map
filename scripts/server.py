@@ -378,6 +378,9 @@ def main():
     n, freed = pipeline.drop_uncompressed()  # couches et paquets : seulement compressés
     if n:
         print(f"{n} couches non compressées supprimées ({freed / 1e9:.1f} Go libérés)", flush=True)
+    freed = pipeline.compact_raw_cache()  # cache data/raw : OSM et Airparif compressés
+    if freed:
+        print(f"cache des téléchargements compacté ({freed / 1e9:.1f} Go libérés)", flush=True)
     def purge():
         removed, kept, size = pipeline.purge_tiles()
         print(f"fond de carte : {kept} tuiles en cache ({size / 1e6:.0f} Mo)"

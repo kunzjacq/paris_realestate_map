@@ -850,10 +850,18 @@ def overpass_wait_slot(url, log):
         time.sleep(wait)
 
 
+def osm_path(i, j):
+    """Dalle OSM en cache, compressée (réponse JSON d'Overpass, ~8 fois plus petite en gzip)."""
+    return RAW / "osm" / f"{i}_{j}.json.gz"
+
+
 def osm_tile(i, j, log=print):
     """Voies (highway=*) d'une dalle OSM, téléchargée une fois via Overpass."""
     d = RAW / "osm"
     d.mkdir(exist_ok=True)
+    legacy = d / f"{i}_{j}.json"  # dalle d'avant la compression : convertie plutôt que retéléchargée
+    if legacy.exists() and not osm_path(i, j).exists():
+        gzip_keep_mtime(legacy)
     dlat, dlon = OSM_TILE_DEG
     s, w = i * dlat, j * dlon
     query = f'[out:json][timeout:180];way["highway"]({s:.4f},{w:.4f},{s + dlat:.4f},{w + dlon:.4f});out body;>;out skel qt;'
@@ -885,14 +893,14 @@ def osm_tile(i, j, log=print):
                     elif not any(e["type"] == "way" for e in data["elements"]):
                         err = "réponse sans voie"
                     else:
-                        return r.content
+                        return gzip.compress(r.content, compresslevel=6, mtime=0)
                 else:
                     err = f"HTTP {r.status_code}"
             except (requests.RequestException, ValueError) as e:
                 err = type(e).__name__
             log(f"Overpass, essai {attempt + 1}/{len(plan)} ({host}) : {err}")
         raise RuntimeError(f"Overpass indisponible ({err}), réessayez plus tard")
-    return json.loads(cached(d / f"{i}_{j}.json", fetch).read_bytes())
+    return json.loads(gzip.decompress(cached(osm_path(i, j), fetch).read_bytes()))
 
 
 def osm_tiles(bounds_wgs):
@@ -911,7 +919,7 @@ def load_osm(bounds_wgs, log):
     tiles = osm_tiles(bounds_wgs)
     nodes, ways = {}, {}
     for k, (i, j) in enumerate(tiles):
-        f = RAW / "osm" / f"{i}_{j}.json"
+        f = osm_path(i, j)
         log(f"réseau OSM : dalle {k + 1}/{len(tiles)} "
             + ("(en cache)" if f.exists() and not is_stale(f) else "(téléchargement Overpass)"))
         for el in osm_tile(i, j, log)["elements"]:
@@ -1122,6 +1130,26 @@ class Grid:
 
 # --------------------------------------------------------------------------- air
 
+# GeoTIFF du cache Airparif : float32 non compressé tel que renvoyé par le WCS ; réécrit en DEFLATE avec
+# prédicteur flottant, sans perte (~25 fois plus petit), lu de la même façon par rasterio
+TIFF_COMPRESSION = {"compress": "deflate", "predictor": 3, "zlevel": 9}
+
+
+def compressed_tiff(content):
+    """GeoTIFF (bytes) réécrit compressé sans perte (TIFF_COMPRESSION)."""
+    with MemoryFile(content) as src_mem, src_mem.open() as src:
+        if src.compression is not None:
+            return content
+        data = src.read()
+        profile = dict(src.profile, **TIFF_COMPRESSION)
+        if profile["dtype"] not in ("float32", "float64"):
+            profile["predictor"] = 2
+    with MemoryFile() as out_mem:
+        with out_mem.open(**profile) as dst:
+            dst.write(data)
+        return out_mem.read()
+
+
 def airparif_layer(grid, pollutant, code):
     """Moyenne annuelle (µg/m³) Airparif, rééchantillonnée sur la grille."""
     x0, y0, x1, y1 = transform_bounds(3857, 27572, grid.left, grid.bottom, grid.right, grid.top)
@@ -1140,7 +1168,7 @@ def airparif_layer(grid, pollutant, code):
         for attempt in range(5):
             content = http_get(AIRPARIF_WCS, params=params).content
             if content[:4] in (b"MM\x00*", b"II*\x00"):
-                return content
+                return compressed_tiff(content)
             time.sleep(3 * (attempt + 1))
         raise RuntimeError(f"Airparif ne renvoie pas de GeoTIFF pour {pollutant} : {content[:300]!r}")
     f = cached(d / f"{pollutant}_{AIR_YEAR}_{code}.tif", fetch)
@@ -1917,7 +1945,7 @@ def _commune_files(code):
         geom = gpd.GeoSeries([commune_geom(code).geometry], crs=4326).to_crs(2154).iloc[0]
         _osm_tiles_cache[code] = osm_tiles(osm_bounds(geom))
     return {
-        "osm": [RAW / "osm" / f"{i}_{j}.json" for i, j in _osm_tiles_cache[code]],
+        "osm": [osm_path(i, j) for i, j in _osm_tiles_cache[code]],
         "airparif": [RAW / "airparif" / f"{pol}_{AIR_YEAR}_{code}.tif" for pol in AIR_POLLUTANTS],
         "bruit_route": sorted((RAW / "bruitparif_route" / code).glob("*.png")),
         "bruit_fer": sorted((RAW / "bruitparif_fer" / code).glob("*.png")),
@@ -2101,6 +2129,54 @@ def pack_missing():
             write_gz(pack)
             n += 1
     return n
+
+
+# --------------------------------------------------------------------------- cache data/raw compact
+
+def gzip_keep_mtime(path):
+    """Remplace path par path.gz, en gardant sa date (âge de la donnée : mise à jour au-delà de 6 mois)."""
+    st = path.stat()
+    gz = gz_path(path)
+    tmp = gz.with_name(gz.name + f".{os.getpid()}.tmp")
+    tmp.write_bytes(gzip.compress(path.read_bytes(), compresslevel=6, mtime=0))
+    os.utime(tmp, (st.st_atime, st.st_mtime))
+    os.replace(tmp, gz)
+    path.unlink()
+
+
+def compact_raw_cache(log=print):
+    """Compacte le cache data/raw d'avant sa compression, en gardant la date des fichiers : dalles OSM en
+    .json.gz, GeoTIFF Airparif compressés sans perte ; supprime les dossiers d'une ancienne version
+    (isochrones/, isochrones_velo/). Renvoie les octets libérés."""
+    before = 0
+    after = 0
+    tiles = sorted((RAW / "osm").glob("*.json")) if (RAW / "osm").exists() else []
+    tifs = []
+    for f in sorted((RAW / "airparif").glob("*.tif")) if (RAW / "airparif").exists() else []:
+        with rasterio.open(f) as src:
+            if src.compression is None:
+                tifs.append(f)
+    if tiles or tifs:
+        log(f"compression du cache : {len(tiles)} dalles OSM, {len(tifs)} GeoTIFF Airparif")
+    for f in tiles:
+        before += f.stat().st_size
+        gzip_keep_mtime(f)
+        after += gz_path(f).stat().st_size
+    for f in tifs:
+        st = f.stat()
+        before += st.st_size
+        data = compressed_tiff(f.read_bytes())
+        tmp = f.with_name(f.name + f".{os.getpid()}.tmp")
+        tmp.write_bytes(data)
+        os.utime(tmp, (st.st_atime, st.st_mtime))
+        os.replace(tmp, f)
+        after += len(data)
+    for old in ("isochrones", "isochrones_velo"):  # temps de trajet d'une ancienne version, plus utilisés
+        d = RAW / old
+        if d.is_dir():
+            before += sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+            shutil.rmtree(d)
+    return before - after
 
 
 # --------------------------------------------------------------------------- compression

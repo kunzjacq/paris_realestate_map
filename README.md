@@ -165,7 +165,9 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
    rafraîchies, puis couches et paquets non compressés supprimés (données d'avant la compression seule ou
    archive à l'ancien format : voir « Fichiers servis ») ; communes dont un groupe de couches a un
    format antérieur (`FORMATS` dans `pipeline.py`, voir « File de construction ») mises en file de
-   reconstruction.
+   reconstruction ; cache des téléchargements d'avant sa compression compacté (dalles OSM en `.json.gz`,
+   GeoTIFF Airparif compressés sans perte, dates des fichiers conservées pour leur âge) et dossiers d'une
+   ancienne version (`data/raw/isochrones*`) supprimés.
 5. **Cache du fond de carte** : tuiles de plus de 6 mois supprimées (en arrière-plan).
 
 ### Fichiers servis
@@ -322,13 +324,13 @@ taille de cellule…
 
 | Critère | Source | Détail |
 |---|---|---|
-| Temps à pied jusqu'à une gare | OpenStreetMap (Overpass, dalles en cache dans `data/raw/osm/`) + entrées de gares et bouches de métro IDFM | plus court chemin sur le réseau piéton, 4,5 km/h, depuis chaque entrée ; temps réel par cellule (s) |
+| Temps à pied jusqu'à une gare | OpenStreetMap (Overpass, dalles en cache dans `data/raw/osm/`, réponses JSON compressées en `.json.gz`, ~8 fois plus petites) + entrées de gares et bouches de métro IDFM | plus court chemin sur le réseau piéton, 4,5 km/h, depuis chaque entrée ; temps réel par cellule (s) |
 | Temps à vélo jusqu'à une gare | OpenStreetMap | plus court chemin vers la gare, sens uniques respectés sauf contresens cyclables, 15 km/h (6 km/h sur voies piétonnes), escaliers et voies interdites exclus |
 | Tramways (option) | IDFM, `emplacement-des-gares-idf` (modes `TRAMWAY` et `TRAM`) | arrêts des lignes T1 à T14 à moins de 4,5 km de la commune ; un jeu de couches de temps par ligne (`walk_tram3a`…), combiné dans l'application selon les lignes cochées |
 | Temps jusqu'à une destination (option) | IDFM, horaires théoriques GTFS `offre-horaires-tc-gtfs-idfm` (cache `data/raw/idfm_gtfs.zip`, 147 Mo) | RER, Transilien, métro, tramway et TER d'un mardi de la période couverte par le fichier (`transit.py`, `SERVICE_WEEKDAY`). Pour chaque destination (`DESTINATIONS` : zones de correspondance IDFM d'arrivée), profil de tous les départs de chaque arrêt en une passe (Connection Scan Algorithm), attente et correspondances (temps de marche du GTFS) comprises ; par gare et par période (`PERIODS`), durée médiane des départs de chaque minute et ligne prise au départ. Puis, par commune, temps porte à porte en chaque point = min sur les gares de (trajet jusqu'à la gare + durée en transports), en minutes (`walk_dest_<destination>_<période>`…) avec la gare de départ. Réseau prévu (scénarios fin 2027 et fin 2031, `SCENARIOS`) : horaires estimés des lignes en projet ouvertes d'ici là (`project_timetable`), gares ordonnées le long des tracés IDFM (`projets_lignes_idf`), sections d'une même ligne raccordées ; métro : vitesses calées sur les temps de parcours annoncés (15 Sud : Pont de Sèvres – Noisy-Champs en 37 min ; 16 : Saint-Denis Pleyel – Noisy-Champs en ~26 min ; 17 : Saint-Denis Pleyel – Le Mesnil-Amelot en un peu plus de 25 min ; 18 : Orly – Versailles Chantiers en un peu plus de 33 min), un passage toutes les 2 min (15) ou 3 min (16, 17, 18) à la pointe, hors pointe selon le rapport mesuré sur la ligne 14 ; tramway : vitesse et intervalles de la ligne existante ; correspondances : marche à 1 m/s + 4 min (gare du Grand Paris Express) ou 1 min (tram). Couches `walk_dest_<destination>_<période>_<scénario>` ; part des départs empruntant une ligne en projet par gare |
 | Lignes en projet (option) | IDFM, `projets_arrets_idf` et `projets_lignes_idf` (cache `data/raw/idfm_projets_*.geojson`) | gares des lignes 15 à 18 du Grand Paris Express et arrêts des prolongements de tramway (T1, T7, T8, T11, T13), avec la date de mise en service estimée de leur tronçon (opération et phase) ; une gare du Grand Paris Express desservie par plusieurs lignes ouvre avec la première ; pas d'accès connus : temps calculés depuis le point de l'arrêt. Un jeu de couches de temps par date d'ouverture ayant un arrêt à portée de la commune (`walk_gpeAAAAMMJJ`, `walk_tram1_AAAAMMJJ`…), combiné dans l'application selon la date choisie |
 | Gares et stations | IDFM, `emplacement-des-gares-idf` | gares RER (A–E), Transilien (H, J, K, L, N, P, R, U, V) et stations de métro (1 à 14, 3bis, 7bis) à moins de 4,5 km de la commune ; temps calculé par réseau, combiné dans l'application selon les réseaux cochés |
-| NO₂, PM2.5, PM10 | Airparif, WCS 1.0 `namek.airparif.fr` | moyennes annuelles 2025 modélisées, 6,25 m |
+| NO₂, PM2.5, PM10 | Airparif, WCS 1.0 `namek.airparif.fr` (cache `data/raw/airparif/` : GeoTIFF `float32` réécrits en DEFLATE avec prédicteur flottant, sans perte, ~25 fois plus petits) | moyennes annuelles 2025 modélisées, 6,25 m |
 | Bruit routier | Bruitparif, carte stratégique de bruit E4 consolidée (`CSB4_w4echConso_Route_A_Lden`, MapProxy `raster.bruitparif.fr`) | Lden en 8 classes (< 45, 45-50, …, ≥ 75 dB), toutes rues ; images WMS reconverties en classes par leur couleur |
 | Bruit ferroviaire | Bruitparif, CSB E4 consolidée (`CSB4_w4echConso_Fer_A_Lden`), complétée par la DRIEAT (CSB E4 2022, SNCF et RATP) | Lden en 8 classes ; dans chaque cellule, la valeur la plus élevée des deux sources |
 | Indice global (option) | Bruitparif/Airparif, cartographie air-bruit 2024 | 3 niveaux, route + fer + avion |
@@ -416,7 +418,7 @@ dépôt (`.gitignore`) :
 | Dossier | Contenu | Taille |
 |---|---|---|
 | `web/data/` | communes construites, index, gares (couches compressées `<couche>.bin.gz`, regroupées dans `layers.pack.gz`) | ~5,5 Mo par commune (~1,1 Go pour 190 communes) |
-| `data/raw/` | téléchargements en cache : dalles OSM, rasters Airparif, cartes de bruit, gares IDFM, quartiers, IRIS… | ~3,6 Go pour 177 communes |
+| `data/raw/` | téléchargements en cache : dalles OSM et rasters Airparif (compressés), cartes de bruit, gares IDFM, horaires, quartiers, IRIS, ventes DVF… | ~1,6 Go pour 190 communes, dont ~0,6 Go de conversion de la carte air-bruit (`airbruit2024.gpkg`, refaite à la demande) |
 | `data/raw/tiles/` | tuiles du fond de carte, au fil de la consultation | selon les zones vues (voir « Limites ») |
 
 Tout se régénère avec les scripts, mais certaines sources sont lentes ou parfois indisponibles (Overpass,
@@ -426,8 +428,8 @@ demande pas d'environnement virtuel. À la restauration, il refuse les chemins h
 par le filtre `data` de `tarfile`.
 
 ```sh
-python3 scripts/data_archive.py save                  # web/data + data/raw tels quels (190 communes : ~4,4 Go)
-python3 scripts/data_archive.py save --raw=xz         # data/raw compressé en xz (~3 Go de moins, ~45 s)
+python3 scripts/data_archive.py save                  # web/data + data/raw tels quels (190 communes : ~1,5 Go, quelques s)
+python3 scripts/data_archive.py save --raw=xz         # data/raw compressé en xz (~140 Mo de moins, ~15 s)
 python3 scripts/data_archive.py save --raw=gz         # idem en gzip (un peu plus gros)
 python3 scripts/data_archive.py save --no-cache       # web/data seulement (~0,9 Go ; suffit pour l'appli)
 python3 scripts/data_archive.py save mes-donnees.tar  # nom d'archive choisi
@@ -435,10 +437,11 @@ python3 scripts/data_archive.py restore idf_livability_map-data-AAAAMMJJ.tar   #
 ```
 
 **`save`** crée par défaut `idf_livability_map-data-AAAAMMJJ.tar` à la racine du projet (ignoré par git).
-L'archive elle-même n'est pas compressée :
+L'archive n'est pas compressée, ses fichiers le sont déjà presque tous :
 - `web/data/` : couches compressées (`.bin.gz`, ~0,9 Go), reprises sans décompression ni recompression ;
-- `data/raw/` (téléchargements, ~3,5 Go hors fichiers omis, en grande partie non compressés), tel quel par
-  défaut ; `--raw=xz` le place dans l'archive sous forme d'une archive interne
+- `data/raw/` (~0,65 Go hors fichiers omis) : zip (horaires, carte air-bruit), PNG (bruit), dalles OSM en
+  `.json.gz`, GeoTIFF Airparif compressés. Une compression n'y gagne plus que ~20 % (~140 Mo, surtout sur
+  les couches DRIEAT) : `--raw=xz` place alors `data/raw/` dans l'archive sous forme d'une archive interne
   `data/raw.tar.xz` (commande `xz` sur tous les cœurs si elle est installée, sinon module `lzma` de Python,
   sur un seul cœur, bien plus lent), `--raw=gz` de même en gzip.
 
