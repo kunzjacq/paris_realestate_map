@@ -11,8 +11,19 @@ d'Île-de-France.
 ./run.sh --jobs 4   # communes construites en parallèle (défaut : un quart des cœurs, 8 au plus)
 ```
 
-`run.sh` choisit un environnement Python, installe les dépendances manquantes puis démarre le serveur
-(voir « Serveur » ci-dessous). Pour ajouter une commune depuis l'application :
+`run.sh` choisit un environnement Python (Python 3.12 ou plus récent), installe les dépendances manquantes
+puis démarre le serveur (voir « Serveur » ci-dessous). Il fonctionne sous Linux et macOS.
+
+**macOS** : le `python3` fourni avec les outils Xcode est trop ancien (3.9). Installer un Python récent
+(`brew install python@3.12`, ou l'installeur de python.org) : `run.sh` prend le premier Python ≥ 3.12 trouvé
+(`python3`, `python3.14`, `python3.13`, `python3.12`) et crée `.venv-local` avec lui. Les dépendances
+(GDAL compris, via rasterio et pyogrio) s'installent en paquets précompilés, sans compilation. `run.sh`
+relève aussi la limite de fichiers ouverts à 4 096 (256 par défaut sous macOS, trop pour les constructions
+en parallèle). Les données d'une autre machine se reprennent avec `scripts/data_archive.py` (voir « Dépôt
+git et données ») ; sans la commande `xz` (`brew install xz`), les archives `.tar.xz` passent par le module
+`lzma` de Python, plus lent.
+
+Pour ajouter une commune depuis l'application :
 - la rechercher par nom ;
 - cliquer sur la carte hors des communes chargées ;
 - ou cliquer sur « Ajouter les communes visibles » (communes visibles à au moins 30 %, 12 au maximum).
