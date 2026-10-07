@@ -4,7 +4,7 @@
     python3 scripts/data_archive.py save [--no-cache] [--xz] [fichier.tar.gz | fichier.tar.xz]
     python3 scripts/data_archive.py restore fichier.tar.gz | fichier.tar.xz
 
-(bibliothèque standard seulement, Python ≥ 3.12 ; la commande xz, si elle est installée, accélère --xz)
+(bibliothèque standard seulement, Python ≥ 3.8 ; la commande xz, si elle est installée, accélère --xz)
 
 save        crée une archive avec web/data/ (communes construites, suffisant pour utiliser l'application)
             et data/raw/ (téléchargements : utile pour ajouter ou reconstruire des communes sans tout
@@ -87,6 +87,20 @@ def save(args):
     print(f"archive : {out} ({out.stat().st_size / 1e6:.0f} Mo, {time.time() - t0:.0f} s)")
 
 
+def inside(name):
+    return name.startswith(("web/data/", "data/raw/")) and ".." not in Path(name).parts
+
+
+def safe_member(m):
+    """Fichier, dossier ou lien physique (couches reprises lors d'une reconstruction) sous web/data ou
+    data/raw ; pas de lien symbolique ni de fichier spécial."""
+    if not inside(m.name):
+        return False
+    if m.islnk():
+        return inside(m.linkname)
+    return m.isfile() or m.isdir()
+
+
 def restore(args):
     if not args:
         sys.exit(__doc__)
@@ -101,10 +115,13 @@ def restore(args):
         sys.exit(f"{src} n'est pas une archive tar lisible ({e})")
     with tar:
         members = tar.getmembers()
-        bad = [m.name for m in members if not (m.name.startswith(("web/data/", "data/raw/")) and ".." not in m.name)]
+        bad = [m.name for m in members if not safe_member(m)]
         if bad:
-            sys.exit(f"archive inattendue (chemins hors web/data et data/raw) : {bad[:5]}")
-        tar.extractall(ROOT, filter="data")
+            sys.exit(f"archive inattendue (chemins hors web/data et data/raw, ou liens) : {bad[:5]}")
+        if hasattr(tarfile, "data_filter"):  # Python ≥ 3.12 (et correctifs récents des versions antérieures)
+            tar.extractall(ROOT, filter="data")
+        else:  # Python plus ancien (python3 d'Apple, 3.9) : vérifications de safe_member seulement
+            tar.extractall(ROOT, members)
     print(f"{len(members)} fichiers restaurés dans {ROOT}")
     print("Les versions compressées (.gz) seront recréées au prochain lancement de ./run.sh.")
 

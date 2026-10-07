@@ -42,7 +42,8 @@ de [python.org](https://www.python.org/downloads/macos/) un Python récent. `xz`
 les archives `.tar.xz` passent par le module `lzma` de Python, plus lent.
 
 Puis cloner le dépôt, reprendre les données d'une autre machine (archive faite par
-`scripts/data_archive.py save`, voir « Dépôt git et données ») et lancer :
+`scripts/data_archive.py save`, voir « Dépôt git et données » ; la restauration fonctionne aussi avec le
+`python3` d'Apple) et lancer :
 
 ```sh
 git clone git@github.com:kunzjacq/paris_realestate_map.git   # ou https://github.com/kunzjacq/paris_realestate_map.git
@@ -410,8 +411,10 @@ dépôt (`.gitignore`) :
 
 Tout se régénère avec les scripts, mais certaines sources sont lentes ou parfois indisponibles (Overpass,
 Airparif). `scripts/data_archive.py` sauvegarde ces données dans une archive `.tar.gz` ou `.tar.xz` et les
-restaure ; il n'utilise que la bibliothèque standard (Python ≥ 3.12) et ne demande pas d'environnement
-virtuel.
+restaure ; il n'utilise que la bibliothèque standard (Python ≥ 3.8, y compris le `python3` d'Apple) et ne
+demande pas d'environnement virtuel. À la restauration, il refuse les chemins hors de `web/data/` et
+`data/raw/`, les liens symboliques et les fichiers spéciaux ; avec Python ≥ 3.12, l'extraction passe en plus
+par le filtre `data` de `tarfile`.
 
 ```sh
 python3 scripts/data_archive.py save                     # web/data + data/raw (gzip, ~580 Mo pour 177 communes)
