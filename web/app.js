@@ -138,13 +138,30 @@ async function loadCommuneMeta(code, built) {
   });
 }
 
+// couche (.bin) ou paquet (layers.pack) : gardés seulement compressés (.gz) ; le serveur du projet les envoie
+// sous leur nom (Content-Encoding: gzip, décompressés par le navigateur). Un simple serveur statique ne les a
+// que sous le nom .gz : demandé alors et décompressé ici. null si le fichier n'existe pas.
+async function fetchBinary(url) {
+  let r = await fetch(url, { cache: "no-cache" });
+  if (r.status === 404) {
+    r = await fetch(`${url}.gz`, { cache: "no-cache" });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`${url}.gz : HTTP ${r.status}`);
+    const buf = await r.arrayBuffer(), head = new Uint8Array(buf, 0, 2);
+    if (head[0] !== 0x1f || head[1] !== 0x8b) return buf;  // déjà décompressé en route
+    return new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+  }
+  if (!r.ok) throw new Error(`${url} : HTTP ${r.status}`);
+  return r.arrayBuffer();
+}
+
 async function loadCommuneData(c) {
   const base = `data/communes/${c.code}/`;
   const layers = {};
-  const pack = await fetch(`${base}layers.pack`, { cache: "no-cache" });
-  if (pack.ok) {
+  const pack = await fetchBinary(`${base}layers.pack`);
+  if (pack) {
     // une seule requête : couches à la suite, dans l'ordre de meta.layers
-    const buf = await pack.arrayBuffer(), n = c.meta.width * c.meta.height;
+    const buf = pack, n = c.meta.width * c.meta.height;
     let off = 0;
     for (const name of c.meta.pack || Object.keys(c.meta.layers)) {
       const info = c.meta.layers[name];
@@ -152,19 +169,18 @@ async function loadCommuneData(c) {
       layers[name] = new T(buf.slice(off, off + n * T.BYTES_PER_ELEMENT));
       off += n * T.BYTES_PER_ELEMENT;
     }
-  } else {  // commune construite avant les paquets (serveur pas encore relancé)
-    for (const [name, info] of Object.entries(c.meta.layers)) {
-      const r = await fetch(`${base}${name}.bin`, { cache: "no-cache" });
-      if (!r.ok) throw new Error(`${base}${name}.bin : HTTP ${r.status}`);
-      const buf = await r.arrayBuffer();
-      layers[name] = info.dtype === "uint16" ? new Uint16Array(buf) : new Uint8Array(buf);
+  } else {  // paquet pas encore créé (données restaurées d'une archive, serveur pas encore relancé)
+    for (const name of c.meta.pack || Object.keys(c.meta.layers)) {
+      const buf = await fetchBinary(`${base}${name}.bin`);
+      if (!buf) throw new Error(`${base}${name}.bin : absent`);
+      layers[name] = c.meta.layers[name].dtype === "uint16" ? new Uint16Array(buf) : new Uint8Array(buf);
     }
   }
   // prix médian au m² par cellule (prix_<type>.bin, hors paquet : refaites sans reconstruire la commune)
   if (c.meta.prix_format) {
     await Promise.all(Object.keys(PRIX_TYPES).map(async (name) => {
-      const r = await fetch(`${base}${name}.bin`, { cache: "no-cache" });
-      if (r.ok) layers[name] = new Uint16Array(await r.arrayBuffer());
+      const buf = await fetchBinary(`${base}${name}.bin`).catch(() => null);
+      if (buf) layers[name] = new Uint16Array(buf);
     }));
   }
   if (communes.get(c.code) !== c) return;  // commune retirée ou reconstruite entre-temps
@@ -190,9 +206,8 @@ async function ensureNetworkLayers(c) {
   names.forEach((name) => c.fetching.add(name));
   try {
     await Promise.all(names.map(async (name) => {
-      const r = await fetch(`${base}${name}.bin`, { cache: "no-cache" });
-      if (!r.ok) throw new Error(`${base}${name}.bin : HTTP ${r.status}`);
-      const buf = await r.arrayBuffer();
+      const buf = await fetchBinary(`${base}${name}.bin`);
+      if (!buf) throw new Error(`${base}${name}.bin : absent`);
       if (communes.get(c.code) === c) c.L[name] = c.meta.layers[name].dtype === "uint16" ? new Uint16Array(buf) : new Uint8Array(buf);
     }));
   } catch (e) {

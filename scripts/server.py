@@ -25,6 +25,7 @@ Fond de carte : GET /tiles/<plan|ortho>/<z>/<x>/<y> sert les tuiles IGN, gardée
 
 import argparse
 import importlib
+import gzip
 import json
 import mimetypes
 import multiprocessing
@@ -233,14 +234,17 @@ class Handler(SimpleHTTPRequestHandler):
             self.close_connection = True
 
     def send_gzip_if_available(self, path):
-        """Sert path.gz (Content-Encoding: gzip) si le navigateur l'accepte et s'il est à jour."""
-        if "gzip" not in self.headers.get("Accept-Encoding", ""):
-            return False
+        """Sert path.gz s'il est à jour : tel quel (Content-Encoding: gzip) si le navigateur accepte gzip,
+        sinon décompressé ; seule possibilité pour les couches et paquets, gardés seulement compressés
+        (pipeline.GZ_ONLY_SUFFIXES). False : pas de .gz à jour, le fichier est servi normalement."""
         src = self.translate_path(path)
         gz = src + ".gz"
-        if not (os.path.isfile(src) and os.path.isfile(gz)) or os.path.getmtime(gz) < os.path.getmtime(src):
+        if not os.path.isfile(gz) or (os.path.isfile(src) and os.path.getmtime(gz) < os.path.getmtime(src)):
             return False
-        st = os.stat(src)
+        accepts = "gzip" in self.headers.get("Accept-Encoding", "")
+        if not accepts and os.path.isfile(src):
+            return False
+        st = os.stat(gz)
         last_modified = self.date_time_string(st.st_mtime)
         if self.headers.get("If-Modified-Since") == last_modified:
             self.send_response(304)
@@ -248,9 +252,12 @@ class Handler(SimpleHTTPRequestHandler):
             return True
         with open(gz, "rb") as f:
             body = f.read()
+        if not accepts:
+            body = gzip.decompress(body)
         self.send_response(200)
         self.send_header("Content-Type", mimetypes.guess_type(src)[0] or "application/octet-stream")
-        self.send_header("Content-Encoding", "gzip")
+        if accepts:
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Last-Modified", last_modified)
@@ -368,6 +375,9 @@ def main():
     n = pipeline.compress_missing()
     if n:
         print(f"{n} fichiers de données compressés", flush=True)
+    n, freed = pipeline.drop_uncompressed()  # couches et paquets : seulement compressés
+    if n:
+        print(f"{n} couches non compressées supprimées ({freed / 1e9:.1f} Go libérés)", flush=True)
     def purge():
         removed, kept, size = pipeline.purge_tiles()
         print(f"fond de carte : {kept} tuiles en cache ({size / 1e6:.0f} Mo)"

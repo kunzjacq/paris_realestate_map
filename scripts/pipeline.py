@@ -3,7 +3,8 @@
 Chaque commune a sa propre grille (Web Mercator, ~10 m) écrite dans
 web/data/communes/<code>/ :
   meta.json      description de la grille, des couches et des gares utilisées
-  <couche>.bin   une couche raster par fichier (uint8 ou uint16, ligne par ligne, nord en haut)
+  <couche>.bin.gz  une couche raster par fichier, compressée (uint8 ou uint16, ligne par ligne, nord en haut)
+  layers.pack.gz   couches de base à la suite (une seule requête de l'application)
   commune.geojson, stations.geojson, acces.geojson
   quartiers.geojson  découpage en quartiers (Linternaute), absent si le téléchargement a échoué
   quartiers_limites.geojson  limites entre quartiers, chacune une seule fois (tracé en pointillés)
@@ -1391,7 +1392,7 @@ def build_commune(code, log=print, groups=None, index=True):
 
     layers = {"commune": grid.burn([(commune.to_crs(3857).geometry.iloc[0], 1)])}
     for k in reuse:  # couches reprises de la version actuelle
-        layers[k] = np.fromfile(out / f"{k}.bin", dtype=old_meta["layers"][k]["dtype"]).reshape(grid.shape)
+        layers[k] = read_layer(out / f"{k}.bin", old_meta["layers"][k]["dtype"], grid.shape)
 
     if "transport" in groups:
         stations, accesses = stations_near(commune_l93)
@@ -1466,10 +1467,10 @@ def build_commune(code, log=print, groups=None, index=True):
     tmp.mkdir(parents=True)
     meta_layers = {}
     for name, arr in layers.items():
-        if name in reuse:  # fichiers repris tels quels (et leur version compressée : pas de recompression)
-            for suffix in (".bin", ".bin.gz"):
-                if (out / f"{name}{suffix}").exists():
-                    os.link(out / f"{name}{suffix}", tmp / f"{name}{suffix}")
+        if name in reuse:  # fichier repris tel quel, compressé (sinon, ancien .bin : compressé par compress_dir)
+            src = gz_path(out / f"{name}.bin")
+            src = src if src.exists() else out / f"{name}.bin"
+            os.link(src, tmp / src.name)
         else:
             (tmp / f"{name}.bin").write_bytes(np.ascontiguousarray(arr).tobytes())
         meta_layers[name] = {"dtype": str(arr.dtype)}
@@ -1709,8 +1710,8 @@ def read_layers(code, names=None):
     meta = json.loads((d / "meta.json").read_text())
     infos = dict(meta["layers"])
     if names is not None and meta.get("prix_format"):  # couches de prix : seulement si demandées
-        infos.update({n: {"dtype": "uint16"} for n in PRIX_LAYERS if (d / f"{n}.bin").exists()})
-    layers = {name: np.fromfile(d / f"{name}.bin", dtype=info["dtype"]).reshape(meta["height"], meta["width"])
+        infos.update({n: {"dtype": "uint16"} for n in PRIX_LAYERS if data_exists(d / f"{n}.bin")})
+    layers = {name: read_layer(d / f"{name}.bin", info["dtype"], (meta["height"], meta["width"]))
               for name, info in infos.items() if names is None or name in names}
     return meta, layers
 
@@ -1771,7 +1772,7 @@ def cells_layer(code, name):
     key = name
     if name in PRIX_LAYERS:  # refaites sans reconstruire la commune (add_missing_prix) : selon leur date
         f = COMMUNES_DIR / code / f"{name}.bin"
-        key = (name, f.stat().st_mtime if f.exists() else None)
+        key = (name, data_mtime(f) if data_exists(f) else None)
     if key not in sub:
         _, layers = read_layers(code, {name})
         sub[key] = layers[name][inside] if name in layers else None
@@ -2077,15 +2078,17 @@ def layer_network(name):
 
 
 def write_pack(d, names):
+    """Écrit d/layers.pack (non compressé : à compresser ensuite, write_gz ou compress_dir)."""
     tmp = d / f"{PACK_NAME}.{os.getpid()}.tmp"
     with open(tmp, "wb") as out:
         for name in names:
-            out.write((d / f"{name}.bin").read_bytes())
+            out.write(read_data(d / f"{name}.bin"))
     os.replace(tmp, d / PACK_NAME)
 
 
 def pack_missing():
-    """Crée layers.pack pour les communes construites avant son introduction (ou plus ancien que meta.json)."""
+    """Crée layers.pack(.gz) des communes qui n'en ont pas (restaurées d'une archive, qui l'omet) ou dont une
+    couche est plus récente."""
     n = 0
     for d in COMMUNES_DIR.iterdir():
         meta_f, pack = d / "meta.json", d / PACK_NAME
@@ -2093,8 +2096,9 @@ def pack_missing():
             continue
         meta = json.loads(meta_f.read_text())
         names = meta.get("pack", list(meta["layers"]))
-        if not pack.exists() or pack.stat().st_mtime < max((d / f"{k}.bin").stat().st_mtime for k in names):
+        if not data_exists(pack) or data_mtime(pack) < max(data_mtime(d / f"{k}.bin") for k in names):
             write_pack(d, names)
+            write_gz(pack)
             n += 1
     return n
 
@@ -2102,33 +2106,90 @@ def pack_missing():
 # --------------------------------------------------------------------------- compression
 
 COMPRESSED_SUFFIXES = (".bin", ".geojson", ".json", ".pack")
+# gardés seulement compressés : couches et paquets (~99,7 % de web/data, ~12 fois plus petits compressés) ; le
+# serveur les envoie tels quels (Content-Encoding: gzip) et le pipeline les décompresse à la lecture. Les
+# petits .json et .geojson (lus par de nombreuses fonctions) restent en double.
+GZ_ONLY_SUFFIXES = (".bin", ".pack")
+
+
+def gz_path(path):
+    return path.with_name(path.name + ".gz")
+
+
+def read_data(path):
+    """Contenu d'un fichier de web/data : path s'il existe (couche en cours d'écriture, ou données d'avant la
+    compression seule), sinon path.gz décompressé."""
+    if path.exists():
+        return path.read_bytes()
+    return gzip.decompress(gz_path(path).read_bytes())
+
+
+def read_layer(path, dtype, shape):
+    return np.frombuffer(bytearray(read_data(path)), dtype=dtype).reshape(shape)  # modifiable, comme fromfile
+
+
+def data_exists(path):
+    return path.exists() or gz_path(path).exists()
+
+
+def data_mtime(path):
+    return (path if path.exists() else gz_path(path)).stat().st_mtime
 
 
 def write_gz(path):
-    """Écrit path.gz (servi tel quel par le serveur aux navigateurs qui acceptent gzip)."""
+    """Écrit path.gz (servi tel quel par le serveur aux navigateurs qui acceptent gzip) ; couche ou paquet
+    (GZ_ONLY_SUFFIXES) : path est ensuite supprimé."""
     tmp = path.with_name(path.name + f".gz.{os.getpid()}.tmp")
     tmp.write_bytes(gzip.compress(path.read_bytes(), compresslevel=6, mtime=0))
-    os.replace(tmp, path.with_name(path.name + ".gz"))
+    os.replace(tmp, gz_path(path))
+    if path.suffix in GZ_ONLY_SUFFIXES:
+        path.unlink()
 
 
 def compress_dir(d):
-    """Version compressée de chaque fichier qui n'en a pas (couches reprises : leur .gz l'est aussi), sur
-    plusieurs fils (zlib libère le verrou de Python)."""
-    files = [f for f in d.iterdir() if f.suffix in COMPRESSED_SUFFIXES and not f.with_name(f.name + ".gz").exists()]
+    """Version compressée de chaque fichier qui n'en a pas, sur plusieurs fils (zlib libère le verrou de
+    Python) ; couches et paquet : seulement compressés."""
+    files = [f for f in d.iterdir() if f.suffix in COMPRESSED_SUFFIXES and not gz_path(f).exists()]
     with ThreadPoolExecutor(KD_WORKERS) as pool:
         list(pool.map(write_gz, files))
 
 
 def compress_missing():
-    """Crée les .gz absents ou plus anciens que leur fichier (données construites avant la compression)."""
+    """Crée les .gz absents ou plus anciens que leur fichier (données restaurées d'une archive à l'ancien
+    format, construites avant la compression…) ; les couches et paquets ainsi compressés sont supprimés."""
     n = 0
     for f in WEB_DATA.rglob("*"):
         if f.suffix in COMPRESSED_SUFFIXES and f.is_file() and ".part" not in str(f.parent):
-            gz = f.with_name(f.name + ".gz")
+            gz = gz_path(f)
             if not gz.exists() or gz.stat().st_mtime < f.stat().st_mtime:
                 write_gz(f)
                 n += 1
     return n
+
+
+def gz_size_ok(gz, size):
+    """Le .gz redonne-t-il size octets ? (taille d'origine modulo 2³², en fin de fichier gzip)"""
+    with open(gz, "rb") as f:
+        f.seek(-4, os.SEEK_END)
+        return int.from_bytes(f.read(4), "little") == size % 2 ** 32
+
+
+def drop_uncompressed():
+    """Supprime les couches et paquets non compressés dont la version .gz est à jour (données d'avant la
+    compression seule) ; un .gz qui ne redonne pas la bonne taille est d'abord refait. Renvoie (nombre de
+    fichiers, octets libérés)."""
+    n = freed = 0
+    for f in WEB_DATA.rglob("*"):
+        if f.suffix in GZ_ONLY_SUFFIXES and f.is_file() and ".part" not in str(f.parent):
+            size = f.stat().st_size
+            gz = gz_path(f)
+            if gz.exists() and gz.stat().st_mtime >= f.stat().st_mtime and gz_size_ok(gz, size):
+                f.unlink()
+            else:
+                write_gz(f)
+            n += 1
+            freed += size
+    return n, freed
 
 
 def outdated_communes():

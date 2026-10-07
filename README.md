@@ -39,7 +39,7 @@ python3 --version    # 3.12 ou plus récent
 
 Sans Homebrew : `xcode-select --install` donne git (outils en ligne de commande d'Apple), et l'installeur
 de [python.org](https://www.python.org/downloads/macos/) un Python récent. `xz` est facultatif : sans lui,
-les archives `.tar.xz` passent par le module `lzma` de Python, plus lent.
+l'option `--raw=xz` des sauvegardes passe par le module `lzma` de Python, plus lent.
 
 Puis cloner le dépôt, reprendre les données d'une autre machine (archive faite par
 `scripts/data_archive.py save`, voir « Dépôt git et données » ; la restauration fonctionne aussi avec le
@@ -48,7 +48,7 @@ Puis cloner le dépôt, reprendre les données d'une autre machine (archive fait
 ```sh
 git clone git@github.com:kunzjacq/paris_realestate_map.git   # ou https://github.com/kunzjacq/paris_realestate_map.git
 cd paris_realestate_map
-python3 scripts/data_archive.py restore /chemin/idf_livability_map-data-AAAAMMJJ.tar.xz
+python3 scripts/data_archive.py restore /chemin/idf_livability_map-data-AAAAMMJJ.tar   # ou ancien .tar.xz, .tar.gz
 ./run.sh
 ```
 
@@ -160,7 +160,10 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
    aux communes qui ne les ont pas ; quartiers (`quartiers.geojson`, `quartiers_limites.geojson`) calculés pour les communes qui
    n'en ont pas ou dont le calcul est antérieur (`QUARTIERS_FORMAT` dans `pipeline.py`), sans reconstruire
    les communes ; prix immobiliers (`prix.json`) calculés pour les communes qui n'en ont pas, ou dont le
-   calcul est antérieur à leurs quartiers, aux dernières ventes téléchargées ou à `PRIX_FORMAT` ; versions compressées `.gz` créées ou rafraîchies ; communes dont un groupe de couches a un
+   calcul est antérieur à leurs quartiers, aux dernières ventes téléchargées ou à `PRIX_FORMAT` ; paquets
+   `layers.pack.gz` créés s'ils manquent (archive restaurée) ; versions compressées `.gz` créées ou
+   rafraîchies, puis couches et paquets non compressés supprimés (données d'avant la compression seule ou
+   archive à l'ancien format : voir « Fichiers servis ») ; communes dont un groupe de couches a un
    format antérieur (`FORMATS` dans `pipeline.py`, voir « File de construction ») mises en file de
    reconstruction.
 5. **Cache du fond de carte** : tuiles de plus de 6 mois supprimées (en arrière-plan).
@@ -173,9 +176,14 @@ demande et calcule les surfaces de la zone retenue. Il écoute uniquement sur `1
   couches des tramways, des lignes en projet (72 pour Paris) et des destinations (48 par commune) restent à
   part (`<couche>.bin`) : l'application ne charge que celles des réseaux cochés et de la destination choisie, pour les communes
   visibles (les autres à leur apparition) ; chaque commune est recalculée et redessinée à l'arrivée de ses
-  couches, le reste de l'affichage une fois pour toutes. Chaque fichier existe aussi en version
-  compressée (`.gz`, ~5 fois plus petite), envoyée avec `Content-Encoding: gzip` aux navigateurs qui
-  l'acceptent. Le serveur crée au démarrage les paquets et versions compressées manquants.
+  couches, le reste de l'affichage une fois pour toutes.
+  Couches et paquets ne sont gardés que compressés (`<couche>.bin.gz`, `layers.pack.gz`, ~12 fois plus
+  petits : ~1 Go au lieu de ~12 Go pour 190 communes) : le serveur les envoie tels quels sous leur nom
+  (`<couche>.bin`) avec `Content-Encoding: gzip`, ou décompressés au navigateur qui n'accepte pas gzip ; le
+  pipeline les décompresse à la lecture (`read_data`, `read_layer`). Les petits `.json` et `.geojson` existent
+  en version normale et compressée (`.gz`). Le serveur crée au démarrage les paquets et versions
+  compressées manquants, puis supprime les couches et paquets non compressés dont la version `.gz` est à
+  jour (taille vérifiée).
 - `/tiles/<plan|ortho>/<z>/<x>/<y>` : tuiles IGN du fond de carte (Plan IGN, photo aérienne), gardées
   dans `data/raw/tiles/` au fil de la consultation : une zone déjà vue s'affiche hors ligne. Une tuile
   absente ou de plus de 6 mois (`TILE_MAX_AGE_DAYS` dans `pipeline.py`) est (re)demandée à l'IGN, avec
@@ -279,7 +287,9 @@ absent : pas de filtre ; prix inconnu accepté). La réponse donne, par commune,
 chaque critère pris seul (m²). Les couches nécessaires sont gardées en mémoire après le premier appel.
 
 Servie par un simple serveur statique (`python3 -m http.server -d web`), l'application fonctionne en lecture
-seule : pas d'ajout de communes, et les surfaces ne portent que sur les communes chargées à l'écran.
+seule : pas d'ajout de communes, et les surfaces ne portent que sur les communes chargées à l'écran. Un tel
+serveur n'a les couches que sous leur nom compressé : l'application demande alors `<couche>.bin.gz` et le
+décompresse elle-même (`DecompressionStream`).
 
 ## Construire en ligne de commande
 
@@ -405,46 +415,55 @@ dépôt (`.gitignore`) :
 
 | Dossier | Contenu | Taille |
 |---|---|---|
-| `web/data/` | communes construites, index, gares (couches en `.bin` et regroupées dans `layers.pack`, plus les `.gz`) | ~15 Mo par commune (2,6 Go pour 177 communes) |
+| `web/data/` | communes construites, index, gares (couches compressées `<couche>.bin.gz`, regroupées dans `layers.pack.gz`) | ~5,5 Mo par commune (~1,1 Go pour 190 communes) |
 | `data/raw/` | téléchargements en cache : dalles OSM, rasters Airparif, cartes de bruit, gares IDFM, quartiers, IRIS… | ~3,6 Go pour 177 communes |
 | `data/raw/tiles/` | tuiles du fond de carte, au fil de la consultation | selon les zones vues (voir « Limites ») |
 
 Tout se régénère avec les scripts, mais certaines sources sont lentes ou parfois indisponibles (Overpass,
-Airparif). `scripts/data_archive.py` sauvegarde ces données dans une archive `.tar.gz` ou `.tar.xz` et les
-restaure ; il n'utilise que la bibliothèque standard (Python ≥ 3.8, y compris le `python3` d'Apple) et ne
+Airparif). `scripts/data_archive.py` sauvegarde ces données dans une archive `.tar` et les restaure ; il n'utilise que la bibliothèque standard (Python ≥ 3.8, y compris le `python3` d'Apple) et ne
 demande pas d'environnement virtuel. À la restauration, il refuse les chemins hors de `web/data/` et
 `data/raw/`, les liens symboliques et les fichiers spéciaux ; avec Python ≥ 3.12, l'extraction passe en plus
 par le filtre `data` de `tarfile`.
 
 ```sh
-python3 scripts/data_archive.py save                     # web/data + data/raw (gzip, ~580 Mo pour 177 communes)
-python3 scripts/data_archive.py save --xz                # idem en xz (~445 Mo, ~30 s avec la commande xz)
-python3 scripts/data_archive.py save --no-cache          # web/data seulement (suffit pour l'appli)
-python3 scripts/data_archive.py save mes-donnees.tar.xz  # nom d'archive choisi (.xz : compression xz)
-python3 scripts/data_archive.py restore idf_livability_map-data-AAAAMMJJ.tar.xz
+python3 scripts/data_archive.py save                  # web/data + data/raw tels quels (190 communes : ~4,4 Go)
+python3 scripts/data_archive.py save --raw=xz         # data/raw compressé en xz (~3 Go de moins, ~45 s)
+python3 scripts/data_archive.py save --raw=gz         # idem en gzip (un peu plus gros)
+python3 scripts/data_archive.py save --no-cache       # web/data seulement (~0,9 Go ; suffit pour l'appli)
+python3 scripts/data_archive.py save mes-donnees.tar  # nom d'archive choisi
+python3 scripts/data_archive.py restore idf_livability_map-data-AAAAMMJJ.tar   # ~35 s
 ```
 
-**`save`** crée par défaut `idf_livability_map-data-AAAAMMJJ.tar.gz` à la racine du projet (ignoré par git). Avec `--xz`
-(ou un nom finissant par `.xz`), l'archive est compressée en xz : ~25 % plus petite, créée en une trentaine de
-secondes si la commande `xz` est installée (tous les cœurs), sinon en ~7 min par le module `lzma` de Python
-(un seul cœur). Sont omis les fichiers recalculables : les versions compressées `.gz` et les paquets
-`layers.pack` de `web/data/` (recréés au démarrage du serveur), `data/raw/airbruit2024.gpkg` (conversion de
+**`save`** crée par défaut `idf_livability_map-data-AAAAMMJJ.tar` à la racine du projet (ignoré par git).
+L'archive elle-même n'est pas compressée :
+- `web/data/` : couches compressées (`.bin.gz`, ~0,9 Go), reprises sans décompression ni recompression ;
+- `data/raw/` (téléchargements, ~3,5 Go hors fichiers omis, en grande partie non compressés), tel quel par
+  défaut ; `--raw=xz` le place dans l'archive sous forme d'une archive interne
+  `data/raw.tar.xz` (commande `xz` sur tous les cœurs si elle est installée, sinon module `lzma` de Python,
+  sur un seul cœur, bien plus lent), `--raw=gz` de même en gzip.
+
+Sont omis les
+fichiers recalculables : les versions compressées des petits fichiers (`.json.gz`, `.geojson.gz`) et les
+paquets `layers.pack(.gz)` de `web/data/` (recréés au démarrage du serveur), `data/raw/airbruit2024.gpkg` (conversion de
 `airbruit2024.zip`, refaite à la demande), les tuiles du fond de carte (`data/raw/tiles/`, retéléchargées à
 la demande), les fichiers tirés des horaires (`data/raw/gtfs_rail_*.npz`, `data/raw/transit_*.json`) et les
 ventes DVF filtrées (`data/raw/dvf/ventes_*.csv.gz`). Avec `--no-cache`, seul `web/data/` est archivé : l'application fonctionne, mais ajouter ou
 reconstruire une commune retéléchargera ses données.
 
 **`restore`** reconnaît la compression (gzip, xz, bzip2 ou aucune) d'après le contenu du fichier, quel
-que soit son nom, et extrait l'archive à la racine du projet ; il refuse une archive contenant des chemins
-hors de `web/data/` et `data/raw/`. Les fichiers existants de même nom sont remplacés, les autres conservés.
-Ensuite, `./run.sh` recrée les versions compressées et reconstruit les éventuelles communes d'un format
-antérieur (seulement les groupes de couches périmés).
+que soit son nom, et extrait l'archive à la racine du projet, ainsi que l'éventuelle archive interne de
+`data/raw/` (`--raw=xz` ou `gz`), lue à la volée (sans fichier intermédiaire) ; il refuse une archive contenant des chemins hors de `web/data/` et
+`data/raw/`. Les fichiers existants de même nom sont remplacés, les autres conservés.
+Ensuite, `./run.sh` recrée les paquets et versions compressées omis et reconstruit les éventuelles communes
+d'un format antérieur (seulement les groupes de couches périmés). Les archives à l'ancien format (couches
+`<couche>.bin` non compressées, `.tar.gz` ou `.tar.xz`) se restaurent de même : au démarrage, le serveur
+compresse ces couches puis supprime les versions non compressées.
 
 Pour repartir d'un clone du dépôt :
 
 ```sh
 git clone git@github.com:kunzjacq/paris_realestate_map.git idf_livability_map && cd idf_livability_map
-python3 scripts/data_archive.py restore /chemin/idf_livability_map-data-AAAAMMJJ.tar.gz
+python3 scripts/data_archive.py restore /chemin/idf_livability_map-data-AAAAMMJJ.tar
 ./run.sh                                   # crée l'environnement Python au premier lancement
 ```
 
