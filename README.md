@@ -57,6 +57,34 @@ paquets précompilés, sans compilation. Il relève aussi la limite de fichiers 
 défaut sous macOS, trop pour les constructions en parallèle). Au premier démarrage, le serveur recrée les
 fichiers omis de l'archive (versions compressées, paquets de couches).
 
+**Raccourcis** (remplacer `~/paris_realestate_map` par le dossier du clone ; `run.sh` se place lui-même
+dans son dossier, on peut donc l'appeler de n'importe où) :
+
+- icône à double-cliquer : un fichier `.command` s'ouvre dans le Terminal ; celui-ci lance le serveur et
+  ouvre la carte dans le navigateur dès qu'elle répond (Ctrl+C ou fermer la fenêtre pour l'arrêter ; le
+  fichier peut être glissé dans le Dock, à droite du séparateur) :
+
+  ```sh
+  cat > ~/Desktop/Ou-acheter.command <<'EOF'
+  #!/bin/zsh
+  # ouvre l'appli dans le navigateur quand le serveur répond, puis lance le serveur
+  (until curl -sf http://localhost:8000/ >/dev/null; do sleep 1; done; open http://localhost:8000/) &
+  exec ~/paris_realestate_map/run.sh
+  EOF
+  chmod +x ~/Desktop/Ou-acheter.command
+  ```
+
+- commande dans le terminal (`ouacheter`, `ouacheter --jobs 4`, `ouacheter 8080`…) :
+
+  ```sh
+  echo "alias ouacheter='~/paris_realestate_map/run.sh'" >> ~/.zshrc
+  source ~/.zshrc
+  ```
+
+Dans les deux cas, `run.sh` doit trouver le Python de Homebrew : la ligne
+`eval "$(/opt/homebrew/bin/brew shellenv)"` (affichée à la fin de l'installation de Homebrew) doit figurer
+dans `~/.zprofile`, et pas seulement avoir été tapée une fois dans un terminal.
+
 ## Utilisation de l'application
 
 ### Menu (à gauche)
